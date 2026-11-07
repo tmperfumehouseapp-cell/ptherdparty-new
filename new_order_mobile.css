@@ -1,0 +1,136 @@
+/* New order page, PHONE VIEW ONLY.
+   Every rule below lives inside the media query, so laptop and tablet-landscape screens are not touched at all.
+   The page marks itself with body.no-page (new_order.php), so these rules never reach other pages. */
+@media (max-width: 760px) {
+
+  /* ---- room for the fixed bottom bar ---- */
+  .no-page .main { padding-bottom: calc(var(--no-bar-h, 150px) + var(--no-bar-b, 0px) + 28px) !important; }
+  .no-page .page-head h1 { font-size: 26px; letter-spacing: -.02em; }
+
+  /* ---- today's progress: slim and horizontal ---- */
+  .no-page .meter-card { display: flex !important; flex-direction: column; gap: 10px; padding: 14px 16px !important; border-radius: 20px !important; margin-bottom: 12px !important; }
+  .no-page .meter-row { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+  .no-page .meter-msg { font-size: 14px; font-weight: 700; }
+  .no-page .meter-nums { display: flex !important; gap: 22px; }
+  .no-page .meter-nums .v { font-size: 20px; }
+
+  /* ---- one column, calm spacing ---- */
+  .no-page .grid { display: block !important; }
+  .no-page .grid > * { min-width: 0; max-width: 100%; }
+  .no-page .order-col { display: flex !important; flex-direction: column; gap: 12px; }
+  .no-page .card { padding: 16px !important; margin: 0 0 12px !important; border-radius: 22px !important; }
+  .no-page .step { margin-bottom: 12px !important; display: flex; align-items: center; gap: 10px; }
+  .no-page .step h2 { font-size: 18px !important; margin: 0 !important; }
+  .no-page .step-n { flex: 0 0 auto; }
+  .no-page .hint, .no-page .mini { font-size: 12.5px; line-height: 1.45; }
+
+  /* ---- big, easy fields (16px stops iPhones zooming in) ---- */
+  .no-page input[type=text], .no-page input[type=tel], .no-page input[type=search], .no-page input[type=number],
+  .no-page select, .no-page textarea {
+    font-size: 16px !important; min-height: 52px; border-radius: 14px; width: 100%; box-sizing: border-box;
+  }
+  .no-page textarea { min-height: 104px; }
+  .no-page label { font-size: 13px; font-weight: 700; }
+  .no-page .field[style*="max-width"], .no-page [style*="flex:1 1 240px"] { max-width: none !important; flex: 1 1 100% !important; }
+
+  /* ---- payment type + account ---- */
+  .no-page .pay-row { display: flex !important; flex-direction: column; gap: 14px; align-items: stretch; }
+  .no-page .seg { display: flex !important; width: 100%; }
+  .no-page .seg label { flex: 1 1 0; display: flex; align-items: center; justify-content: center; min-height: 52px; font-size: 16px; text-align: center; }
+  .no-page .account-box { width: 100%; }
+  .no-page .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .no-page .chips label { min-height: 46px; display: inline-flex; align-items: center; padding: 0 16px; font-size: 15px; }
+
+  /* ---- uploads: big tap area, photo or gallery ---- */
+  .no-page input[type=file] {
+    width: 100%; box-sizing: border-box; padding: 12px; font-size: 15px; background: var(--field, #F8FAFC);
+    border: 1.5px dashed var(--field-line, #94A3B8); border-radius: 16px; min-height: 58px;
+  }
+  .no-page input[type=file]::file-selector-button {
+    border: 0; border-radius: 999px; padding: 11px 16px; margin-right: 12px; font-weight: 800; font-size: 14px;
+    background: #10B981; color: #04251B;
+  }
+  .no-page #proof-preview, .no-page #ref-preview { max-height: 180px !important; }
+  .no-page .no-extra { display: none; }
+  .no-page #proof-box.show-more .no-extra { display: block; }
+  .no-page .no-more {
+    display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; min-height: 44px; padding: 0 16px;
+    border: 1.5px solid var(--field-line, #CBD5E1); border-radius: 999px; background: transparent; font: inherit; font-weight: 800; font-size: 14px; color: inherit;
+  }
+
+  /* ---- customer: single column, "Automatic order ID" box hidden (nothing to type there) ---- */
+  .no-page .cust-grid { display: grid !important; grid-template-columns: 1fr !important; gap: 12px !important; }
+  .no-page .cust-grid > div:first-child { display: none; }
+  .no-page .cust-grid .span2 { grid-column: auto !important; }
+
+  /* ---- products ---- */
+  .no-page .rows-foot { display: flex !important; flex-direction: column; align-items: stretch; gap: 12px; }
+  .no-page #add-row {
+    width: 100%; min-height: 56px; font-size: 17px; font-weight: 800; border-radius: 16px; border: 2px dashed #10B981 !important;
+    background: rgba(16, 185, 129, .08) !important; color: inherit;
+  }
+  .no-page #add-row:active { transform: scale(.98); }
+  .no-page .disc { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .no-page .disc input { width: 130px; min-width: 0; }
+
+  .no-page .no-row { display: grid; grid-template-columns: auto 1fr; gap: 10px 12px; padding: 14px; position: relative; border-radius: 18px; }
+  .no-page .no-name { grid-column: 1 / -1; padding-right: 74px; }
+  .no-page .no-x { position: absolute; top: 4px; right: 4px; height: 44px; padding: 0 12px; }
+  .no-page .no-qty .no-stepper { display: flex; align-items: center; gap: 6px; }
+  .no-page .no-qty input { width: 58px; min-height: 52px; padding: 0 4px; }
+  .no-page .no-step {
+    display: flex; align-items: center; justify-content: center; width: 46px; height: 52px; font-size: 24px; font-weight: 800; line-height: 1;
+    border: 1px solid var(--field-line, #CBD5E1); border-radius: 14px; background: var(--field, #F1F5F9); color: inherit; cursor: pointer;
+  }
+  .no-page .no-step:active { transform: scale(.94); }
+  .no-page .no-sell input { width: 100%; }
+  .no-page .no-line { grid-column: 1 / -1; text-align: right; font-size: 19px; }
+
+  /* ---- product picker: a bottom sheet ---- */
+  .no-page .no-modal, .no-modal { align-items: flex-end !important; padding: 0 !important; }
+  .no-dialog { max-width: none !important; max-height: 92vh !important; height: 88vh; border-radius: 24px 24px 0 0 !important; animation: no-sheet .22s ease-out; }
+  .no-dhead { padding-top: 18px !important; }
+  .no-page .no-search { height: 56px !important; font-size: 16px !important; width: calc(100% - 36px) !important; min-height: 0; margin: 0 18px 10px; }
+  .no-item { min-height: 60px; padding: 12px 10px !important; }
+  .no-item:active { background: rgba(16, 185, 129, .16); }
+  .no-list { padding-bottom: calc(18px + env(safe-area-inset-bottom)) !important; }
+  .no-recent-h { display: block; padding: 8px 12px 4px; font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; color: var(--muted, #64748B); }
+  @keyframes no-sheet { from { transform: translateY(60px); opacity: .4; } to { transform: none; opacity: 1; } }
+
+  /* ---- the summary becomes a fixed bar: message, total, Create order ---- */
+  .no-page .summary {
+    position: fixed !important; left: 0; right: 0; top: auto !important; bottom: var(--no-bar-b, 0px); z-index: 60;
+    width: auto !important; max-width: none !important; margin: 0 !important; box-sizing: border-box;
+    border-radius: 22px 22px 0 0 !important; padding: 14px 16px calc(12px + env(safe-area-inset-bottom)) !important;
+    display: grid !important; grid-template-columns: 1fr auto; gap: 8px 12px; align-items: center;
+    max-height: 72vh; overflow: auto; box-shadow: 0 -12px 32px rgba(15, 23, 42, .28);
+  }
+  .no-page .summary > .sum-top { display: none; }
+  .no-page .summary > .no-next { order: 1; grid-column: 1 / -1; display: block; }
+  .no-page .summary > #proof-note { display: none !important; }
+  .no-page .summary > .form-err { order: 2; grid-column: 1 / -1; }
+  .no-page .summary > .sum-lines, .no-page .summary > .sum-profit { order: 3; grid-column: 1 / -1; }
+  .no-page .summary:not(.is-open) > .sum-lines, .no-page .summary:not(.is-open) > .sum-profit { display: none; }
+  .no-page .summary > div:not([class]) { order: 4; cursor: pointer; }
+  .no-page .summary > div:not([class]) .sum-k::after { content: " ▴ details"; font-size: 11px; opacity: .7; }
+  .no-page .summary.is-open > div:not([class]) .sum-k::after { content: " ▾ hide"; }
+  .no-page .summary .sum-big { font-size: 30px; line-height: 1.1; }
+  .no-page .summary > .cta { order: 5; width: auto; min-width: 156px; height: 56px; margin: 0; font-size: 17px; border-radius: 16px; }
+  .no-page .summary > .cta:not(:disabled) { animation: no-pulse 2.2s ease-in-out infinite; }
+  .no-page .summary > .cta:active { transform: scale(.97); }
+  .no-page .summary > .sum-note:last-child { display: none; }
+  .no-page .summary > .no-progress { display: block; position: absolute; left: 0; top: 0; height: 4px; width: calc(var(--no-p, 0) * 100%); background: linear-gradient(90deg, #34D399, #10B981); border-radius: 0 4px 4px 0; transition: width .3s ease; }
+  .no-page .no-next { font-size: 13.5px; font-weight: 700; color: #FDE68A; text-align: left; cursor: pointer; }
+  .no-page .no-next.is-ready { color: #86EFAC; }
+  @keyframes no-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, .55); } 60% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); } }
+
+  /* ---- Reference + the rest ---- */
+  .no-page #ref-card textarea { min-height: 110px; }
+  .no-page #addnum-box { padding: 12px !important; }
+  .no-page #addnum-box > div { flex-direction: column; align-items: stretch !important; }
+  .no-page #addnum-box .btn { width: 100%; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .no-page .summary > .cta:not(:disabled), .no-dialog { animation: none; }
+  }
+}
