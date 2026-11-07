@@ -1,0 +1,4 @@
+# never commit secrets or customer uploads
+pthirdparty/orders/config.php
+pthirdparty/orders/uploads/
+.env
