@@ -5,6 +5,7 @@ $isAdmin = $user['role'] === 'admin';
 // ready=false items are shown as "Soon" and get switched on in later steps
 $nav = [
     ['key' => 'dashboard',  'label' => 'Home',        'href' => 'index.php',      'ready' => true,  'admin' => true],
+    ['key' => 'overall_report', 'label' => 'Overall Report', 'href' => 'overall_report.php', 'ready' => true, 'admin' => true],
     ['key' => 'new_order',  'label' => 'New order',   'href' => 'new_order.php',  'ready' => true, 'admin' => false],
     ['key' => 'orders',     'label' => 'Orders',      'href' => 'orders.php',     'ready' => true,  'admin' => false],
     ['key' => 'tracking',   'label' => 'Tracking',    'href' => 'tracking.php',   'ready' => true,  'admin' => false],
