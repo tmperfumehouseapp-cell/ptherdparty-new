@@ -45,6 +45,10 @@ foreach (array_filter(['assets/style.css', !empty($extraCss) ? (string)$extraCss
 <?php endif; ?>
 <?php if (!empty($extraCss) && !in_array((string)$extraCss, $cssGone, true)): ?><link rel="stylesheet" href="<?= e($extraCss) ?>?v=<?= $cssV((string)$extraCss) ?>">
 <?php endif; ?>
+<style>/* menu: the open page is blue (was green) */
+.nav-item.is-active{background:#E8F0FE;color:#1D4ED8;box-shadow:inset 3px 0 0 #2563EB}
+.nav-item:not(.is-active):not(.is-soon):hover{background:#F1F5FF}
+@media(max-width:760px){.nav-item.is-active{box-shadow:none}}</style>
 </head>
 <body>
 <div class="shell">
