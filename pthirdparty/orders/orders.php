@@ -31,11 +31,29 @@ $per = 50;
 $chkReady = $isAdmin && order_check_ready($pdo);
 if ($isAdmin && $_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'check') {
     csrf_verify();
+    $ckOk = true;
     try {
-        flash('ok', order_check_apply($pdo, (int)($_POST['id'] ?? 0), (string)($_POST['act'] ?? ''), (int)$user['id']));
+        $ckMsg = order_check_apply($pdo, (int)($_POST['id'] ?? 0), (string)($_POST['act'] ?? ''), (int)$user['id']);
     } catch (RuntimeException $ex) {
-        flash('error', $ex->getMessage());
+        $ckOk = false;
+        $ckMsg = $ex->getMessage();
     }
+    if ((string)($_POST['ajax'] ?? '') === '1') { // clicked on the page: update the row in place, no reload, no jump to the top
+        $ckId = (int)($_POST['id'] ?? 0);
+        $cs = $pdo->prepare('SELECT verified_at, billed_at FROM orders WHERE id = ?');
+        $cs->execute([$ckId]);
+        $crow = $cs->fetch() ?: ['verified_at' => null, 'billed_at' => null];
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode([
+            'ok'   => $ckOk,
+            'msg'  => $ckMsg,
+            'v'    => $crow['verified_at'] !== null ? 1 : 0,
+            'b'    => $crow['billed_at'] !== null ? 1 : 0,
+            'html' => order_check_cell_html($ckId, $crow['verified_at'], $crow['billed_at'], (string)($_POST['qs'] ?? '')),
+        ], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    flash($ckOk ? 'ok' : 'error', $ckMsg);
     parse_str((string)($_POST['qs'] ?? ''), $back);
     redirect('orders.php' . ($back ? '?' . http_build_query($back) : ''));
 }
@@ -281,10 +299,10 @@ $ck->execute($params);
 $ckr = $ck->fetch();
 ?>
 <div class="kchips" style="align-items:center">
-  <span class="tag tag-ok">Verified <?= (int)$ckr['v'] ?> of <?= (int)$ckr['c'] ?></span>
-  <span class="tag <?= (int)$ckr['c'] - (int)$ckr['v'] > 0 ? 'tag-warn' : 'tag-ok' ?>">Not verified <?= (int)$ckr['c'] - (int)$ckr['v'] ?></span>
-  <span class="tag tag-info">Bill done <?= (int)$ckr['b'] ?></span>
-  <span class="tag <?= (int)$ckr['v'] - (int)$ckr['b'] > 0 ? 'tag-warn' : 'tag-ok' ?>">Verified, bill pending <?= max(0, (int)$ckr['v'] - (int)$ckr['b']) ?></span>
+  <span class="tag tag-ok">Verified <b data-k="v"><?= (int)$ckr['v'] ?></b> of <?= (int)$ckr['c'] ?></span>
+  <span class="tag <?= (int)$ckr['c'] - (int)$ckr['v'] > 0 ? 'tag-warn' : 'tag-ok' ?>" data-w="nv">Not verified <b data-k="nv"><?= (int)$ckr['c'] - (int)$ckr['v'] ?></b></span>
+  <span class="tag tag-info">Bill done <b data-k="b"><?= (int)$ckr['b'] ?></b></span>
+  <span class="tag <?= (int)$ckr['v'] - (int)$ckr['b'] > 0 ? 'tag-warn' : 'tag-ok' ?>" data-w="p">Verified, bill pending <b data-k="p"><?= max(0, (int)$ckr['v'] - (int)$ckr['b']) ?></b></span>
 </div>
 <?php endif; ?>
 <section class="card">
@@ -371,26 +389,7 @@ $ckr = $ck->fetch();
           <td><span class="tag <?= e(status_tag_class($r['status'])) ?>"><?= e(status_label($r['status'])) ?></span><?= $isAdmin ? wa_badge($r) : '' ?></td>
           <?php if ($isAdmin): ?><td><?= e($r['sales_name']) ?></td><?php endif; ?>
           <?php if ($chkReady): ?>
-          <td style="white-space:nowrap">
-            <form method="post" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0">
-              <?= csrf_field() ?>
-              <input type="hidden" name="action" value="check">
-              <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
-              <input type="hidden" name="qs" value="<?= e((string)($_SERVER['QUERY_STRING'] ?? '')) ?>">
-              <?php if ($r['verified_at'] === null): ?>
-                <button class="btn btn-sm" type="submit" name="act" value="verify">Verify</button>
-              <?php else: ?>
-                <span class="tag tag-ok" title="Verified <?= e($r['verified_at']) ?>">&#10003; Verified</span>
-                <?php if ($r['billed_at'] === null): ?>
-                  <button class="btn btn-accent btn-sm" type="submit" name="act" value="bill">Bill done</button>
-                  <button class="btn btn-ghost btn-sm" type="submit" name="act" value="unverify" title="Remove the verification">Undo</button>
-                <?php else: ?>
-                  <span class="tag tag-info" title="Bill done <?= e($r['billed_at']) ?>">&#10003; Bill done</span>
-                  <button class="btn btn-ghost btn-sm" type="submit" name="act" value="unbill" title="Remove the bill mark">Undo</button>
-                <?php endif; ?>
-              <?php endif; ?>
-            </form>
-          </td>
+          <td class="chk-cell" style="white-space:nowrap" data-v="<?= $r['verified_at'] === null ? 0 : 1 ?>" data-b="<?= $r['billed_at'] === null ? 0 : 1 ?>"><?= order_check_cell_html((int)$r['id'], $r['verified_at'], $r['billed_at'], (string)($_SERVER['QUERY_STRING'] ?? '')) ?></td>
           <?php endif; ?>
         </tr>
       <?php endforeach; ?>
@@ -406,4 +405,45 @@ $ckr = $ck->fetch();
   <?php endif; ?>
   <?php endif; ?>
 </section>
+<?php if ($chkReady): ?>
+<script>
+// Verify / Bill done / Undo save in the background and change only that row, so the page never reloads or jumps to the top.
+(function () {
+  document.addEventListener('submit', function (ev) {
+    var form = ev.target;
+    if (!form || !form.classList || !form.classList.contains('chk-form')) { return; }
+    var btn = ev.submitter;
+    if (!btn || !btn.value || !window.fetch) { return; } // old browser: normal submit still works
+    ev.preventDefault();
+    var cell = form.closest('.chk-cell');
+    var fd = new FormData(form);
+    fd.set('act', btn.value);
+    fd.set('ajax', '1');
+    var buttons = form.querySelectorAll('button');
+    buttons.forEach(function (b) { b.disabled = true; });
+    fetch('orders.php', { method: 'POST', body: fd, credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { buttons.forEach(function (b) { b.disabled = false; }); window.alert(d.msg || 'Could not save.'); return; }
+        var v1 = parseInt(cell.getAttribute('data-v'), 10) || 0, b1 = parseInt(cell.getAttribute('data-b'), 10) || 0;
+        cell.innerHTML = d.html;
+        cell.setAttribute('data-v', d.v); cell.setAttribute('data-b', d.b);
+        var delta = { v: d.v - v1, nv: -(d.v - v1), b: d.b - b1, p: (d.v - d.b) - (v1 - b1) };
+        Object.keys(delta).forEach(function (k) {
+          var n = document.querySelector('[data-k="' + k + '"]');
+          if (!n) { return; }
+          var val = Math.max(0, (parseInt(n.textContent, 10) || 0) + delta[k]);
+          n.textContent = val;
+          var w = n.closest('[data-w]');
+          if (w) { w.className = 'tag ' + (val > 0 ? 'tag-warn' : 'tag-ok'); }
+        });
+      })
+      .catch(function () {
+        buttons.forEach(function (b) { b.disabled = false; });
+        window.alert('Could not save. Check your internet and try again.');
+      });
+  });
+})();
+</script>
+<?php endif; ?>
 <?php require __DIR__ . '/includes/footer.php'; ?>
