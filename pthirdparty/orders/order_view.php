@@ -251,13 +251,14 @@ require __DIR__ . '/includes/header.php';
       <h2>Items</h2>
       <div class="table-wrap">
         <table class="tight" style="min-width:420px">
-          <thead><tr><th>Image</th><th>Product</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th><?php if ($isAdmin): ?><th class="num">Profit</th><?php endif; ?></tr></thead>
+          <thead><tr><th>Image</th><th>Product</th><th class="num">Qty</th><?php if ($isAdmin): ?><th class="num">Buying</th><?php endif; ?><th class="num">Price</th><th class="num">Amount</th><?php if ($isAdmin): ?><th class="num">Profit</th><?php endif; ?></tr></thead>
           <tbody>
           <?php foreach ($lines as $l): ?>
             <tr>
               <td style="width:76px"><?php if (trim((string)$l['image_url']) !== ''): ?><a href="img_proxy.php?p=<?= (int)$l['product_id'] ?>" target="_blank" rel="noopener"><img src="img_proxy.php?p=<?= (int)$l['product_id'] ?>" alt="<?= e($l['name']) ?>" loading="lazy" style="width:68px;height:68px;object-fit:contain;border-radius:10px;border:1px solid var(--field-line);background:#fff;display:block"></a><?php else: ?><span class="mini">No image</span><?php endif; ?></td>
               <td><?= e($l['name']) ?></td>
               <td class="num"><?= (int)$l['qty'] ?></td>
+              <?php if ($isAdmin): ?><td class="num"><?= e(inr($l['base_price'])) ?><?php if ((int)$l['qty'] > 1): ?><div class="mini">= <?= e(inr($l['qty'] * $l['base_price'])) ?></div><?php endif; ?></td><?php endif; ?>
               <td class="num"><?= e(inr($l['sell_price'])) ?></td>
               <td class="num"><?= e(inr($l['qty'] * $l['sell_price'])) ?></td>
               <?php if ($isAdmin): ?><td class="num <?= $l['profit'] < 0 ? 'neg' : 'pos' ?>"><?= e(inr($l['profit'])) ?></td><?php endif; ?>
@@ -268,6 +269,7 @@ require __DIR__ . '/includes/header.php';
       </div>
       <div style="display:flex;flex-direction:column;gap:6px;margin-top:12px;align-items:flex-end;font-weight:700">
         <?php if ((float)$order['discount'] > 0): ?><div class="mini">Discount -<?= e(inr($order['discount'])) ?></div><?php endif; ?>
+        <?php if ($isAdmin): ?><div class="mini">Total buying cost <?= e(inr(array_sum(array_map(static function ($x) { return $x['qty'] * $x['base_price']; }, $lines)))) ?></div><?php endif; ?>
         <div style="font-size:20px;font-weight:800">Total <?= e(inr($order['total'])) ?></div>
         <?php if ($isAdmin): ?><div class="mini">Profit after discount <?= e(inr($order['profit'])) ?></div><?php endif; ?>
       </div>
