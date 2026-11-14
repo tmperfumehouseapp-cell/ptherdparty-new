@@ -57,6 +57,7 @@
     '.no-item:hover,.no-item:focus{background:var(--field,#F1F5F9);outline:none}',
     '.no-item b{display:block;font-weight:700}',
     '.no-item small{display:block;color:var(--muted,#64748B);font-weight:600}',
+    '.no-item .no-buy{font-size:13px;font-weight:800;color:#0F766E;white-space:nowrap}',
     '.no-item .no-tag{font-size:12px;font-weight:800;color:#B45309;white-space:nowrap}',
     '.no-empty{padding:22px 12px;text-align:center;color:var(--muted,#64748B);font-weight:600}',
     '.no-stepper{display:contents}.no-step,.no-more,.no-progress,.no-next{display:none}',
@@ -96,7 +97,7 @@
     el.innerHTML =
       '<div class="no-name"><b>' + esc(p.name) + '</b>' +
       (p.party ? '<span>' + esc(p.party) + '</span>' : '') +
-      (isAdmin && p.base != null ? '<span class="pbuy">Buying ' + esc(inr(p.base)) + '</span>' : '') +
+      (p.base != null ? '<span class="pbuy">Buying price ' + esc(inr(p.base)) + ' (fixed)</span>' : '') +
       '</div>' +
       '<label class="no-f no-qty">Qty<span class="no-stepper"><button type="button" class="no-step" data-d="-1" aria-label="One less">&minus;</button>' +
       '<input type="text" inputmode="numeric" name="items[' + key + '][qty]" value="' + esc(qty == null ? 1 : qty) + '" aria-label="Quantity">' +
@@ -155,11 +156,13 @@
 
   function renderList() {
     var q = searchEl.value.trim().toLowerCase();
-    var words = q.split(/\s+/).filter(Boolean);
+    var norm = function (t) { return String(t).toLowerCase().replace(/[\u2010-\u2015\-_,.()\/]+/g, ' '); };
+    var words = norm(q).split(/\s+/).filter(Boolean);
+    // every version (White Box, Tester Piece, Original Box...) is its own product, so all of them match and are listed separately
     var shown = products.filter(function (p) {
-      var hay = (p.name + ' ' + (p.party || '')).toLowerCase();
+      var hay = norm(p.name + ' ' + (p.party || ''));
       return words.every(function (w) { return hay.indexOf(w) !== -1; });
-    }).slice(0, 80);
+    }).slice(0, 150);
     if (!products.length) {
       listEl.innerHTML = '<div class="no-empty">No products yet.</div>';
       return;
@@ -172,7 +175,7 @@
       var blocked = !p.hasBase;
       return '<button type="button" class="no-item" data-id="' + p.id + '"' + (blocked ? ' disabled style="opacity:.55;cursor:not-allowed"' : '') + '>' +
         '<span><b>' + esc(p.name) + '</b>' + (p.party ? '<small>' + esc(p.party) + '</small>' : '') + '</span>' +
-        (blocked ? '<span class="no-tag">No buying price</span>' : (isAdmin && p.base != null ? '<small>' + esc(inr(p.base)) + '</small>' : '')) +
+        (blocked ? '<span class="no-tag">No buying price</span>' : (p.base != null ? '<span class="no-buy">Buying ' + esc(inr(p.base)) + '</span>' : '')) +
         '</button>';
     };
     var html = '';
