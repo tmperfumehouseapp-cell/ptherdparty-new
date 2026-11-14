@@ -164,7 +164,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $items = $pdo->prepare(
-    'SELECT oi.qty, oi.sell_price, oi.base_price, oi.discount_share, oi.profit, p.name
+    'SELECT oi.product_id, oi.qty, oi.sell_price, oi.base_price, oi.discount_share, oi.profit, p.name, p.image_url
      FROM order_items oi JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ? ORDER BY oi.id'
 );
 $items->execute([$id]);
@@ -251,10 +251,11 @@ require __DIR__ . '/includes/header.php';
       <h2>Items</h2>
       <div class="table-wrap">
         <table class="tight" style="min-width:420px">
-          <thead><tr><th>Product</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th><?php if ($isAdmin): ?><th class="num">Profit</th><?php endif; ?></tr></thead>
+          <thead><tr><th>Image</th><th>Product</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th><?php if ($isAdmin): ?><th class="num">Profit</th><?php endif; ?></tr></thead>
           <tbody>
           <?php foreach ($lines as $l): ?>
             <tr>
+              <td style="width:76px"><?php if (trim((string)$l['image_url']) !== ''): ?><a href="img_proxy.php?p=<?= (int)$l['product_id'] ?>" target="_blank" rel="noopener"><img src="img_proxy.php?p=<?= (int)$l['product_id'] ?>" alt="<?= e($l['name']) ?>" loading="lazy" style="width:68px;height:68px;object-fit:contain;border-radius:10px;border:1px solid var(--field-line);background:#fff;display:block"></a><?php else: ?><span class="mini">No image</span><?php endif; ?></td>
               <td><?= e($l['name']) ?></td>
               <td class="num"><?= (int)$l['qty'] ?></td>
               <td class="num"><?= e(inr($l['sell_price'])) ?></td>

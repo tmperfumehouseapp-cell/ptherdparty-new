@@ -49,8 +49,9 @@ foreach ($prodRows as $r) {
         'id'    => (int)$r['id'],
         'name'  => $r['name'],
         'party' => $r['party'],
-        // the base (buying) price is only sent to the Manager; salespeople just learn whether it is set
-        'base'  => ($isAdmin && $r['base'] !== null) ? (float)$r['base'] : null,
+        // the fixed buying price (copied from the website, never typed) is shown to everyone as read-only text.
+        // The server always re-reads it from the database when the order is saved, so nothing posted can change it.
+        'base'  => $r['base'] !== null ? (float)$r['base'] : null,
         'hasBase' => $r['base'] !== null,
     ];
 }
@@ -205,6 +206,9 @@ require __DIR__ . '/includes/header.php';
 
       <section class="card">
         <div class="step"><span class="step-n">3</span><h2>Products</h2></div>
+        <?php if (!$isAdmin): ?>
+          <div class="hint" style="margin:-6px 0 12px">Each version of a product (White Box, Tester Piece, Original Box...) is listed separately with its own fixed buying price. The buying price is read-only.</div>
+        <?php endif; ?>
         <?php if ($isAdmin): ?>
           <?php $ago = $costSync['at'] > 0 ? max(0, (int)floor((time() - $costSync['at']) / 60)) : null; ?>
           <div class="hint" style="margin:-6px 0 12px">

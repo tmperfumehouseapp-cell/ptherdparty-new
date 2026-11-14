@@ -1,7 +1,7 @@
 <?php
 // Gives the browser a product photo from this same site, so the order photo can be drawn and saved.
 require __DIR__ . '/includes/bootstrap.php';
-require_admin();
+require_login(); // product photos are shown to the salesperson who owns the order too
 session_write_close();
 
 function img_fail(): void
