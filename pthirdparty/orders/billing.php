@@ -5,6 +5,7 @@ require __DIR__ . '/includes/bootstrap.php';
 require __DIR__ . '/includes/ops_lib.php';
 require_once __DIR__ . '/includes/billing_lib.php'; // only used for bills made in the old billing screen
 require_once __DIR__ . '/includes/simple_lib.php';
+require_once __DIR__ . '/includes/order_check_lib.php';
 $user = require_admin();
 $pdo = db();
 $hasDetails = simple_has_details($pdo);
@@ -138,6 +139,14 @@ $st->execute($filter > 0 ? [$filter] : []);
 $bills = $st->fetchAll();
 
 $dateInput = 'style="width:100%;height:48px;border-radius:12px;border:1px solid var(--field-line);background:var(--field);padding:0 12px"';
+// order bill check: how many parcels of each dealer are verified and have the bill done, for one day or a range
+$ckReady = order_check_ready($pdo);
+$ckFrom = valid_date((string)($_GET['ckfrom'] ?? '')) ?? biz_today();
+$ckTo = valid_date((string)($_GET['ckto'] ?? '')) ?? $ckFrom;
+if ($ckTo < $ckFrom) {
+    $ckTo = $ckFrom;
+}
+$ckRows = $ckReady ? order_check_by_dealer($pdo, $ckFrom, $ckTo) : [];
 $pageTitle = 'Billing';
 $active = 'billing';
 $extraCss = 'assets/pages.css';
@@ -192,6 +201,38 @@ require __DIR__ . '/includes/header.php';
     </div>
     <div class="hint">Saving adds the bill amount to what you owe the dealer. Payments you make are recorded on the dealer's page.</div>
   </form>
+</section>
+
+<section class="card" style="margin-top:16px" id="order-check">
+  <h2>Order bill check</h2>
+  <form method="get" class="filters" style="margin-bottom:12px">
+    <div><label for="ckfrom">From</label><input id="ckfrom" name="ckfrom" type="date" value="<?= e($ckFrom) ?>"></div>
+    <div><label for="ckto">To</label><input id="ckto" name="ckto" type="date" value="<?= e($ckTo) ?>"></div>
+    <button class="btn" type="submit">Show</button>
+  </form>
+  <?php if (!$ckReady): ?>
+    <div class="empty">The check columns could not be added to the orders table yet. Open the Orders page once, or run the ALTER TABLE shown there.</div>
+  <?php elseif (!$ckRows): ?>
+    <div class="empty">No orders in this period.</div>
+  <?php else: ?>
+  <div class="table-wrap">
+    <table class="tight" style="min-width:420px">
+      <thead><tr><th>Dealer</th><th class="num">Parcels</th><th class="num">Verified</th><th class="num">Bill done</th><th class="num">Bill pending</th></tr></thead>
+      <tbody>
+      <?php foreach ($ckRows as $cr): $pend = (int)$cr['parcels'] - (int)$cr['billed']; ?>
+        <tr>
+          <td><?= e($cr['dealer']) ?></td>
+          <td class="num"><?= (int)$cr['parcels'] ?></td>
+          <td class="num"><?= (int)$cr['verified'] ?></td>
+          <td class="num"><?= (int)$cr['billed'] ?></td>
+          <td class="num"><?= $pend > 0 ? '<span class="tag tag-warn">' . $pend . '</span>' : '<span class="tag tag-ok">0</span>' ?></td>
+        </tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table>
+  </div>
+  <div class="hint">A parcel counts under every dealer it has an item from. Verify and Bill done are marked on the Orders page. Refunded orders are left out.</div>
+  <?php endif; ?>
 </section>
 
 <section class="card" style="margin-top:16px">
