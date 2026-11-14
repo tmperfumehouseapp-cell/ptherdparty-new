@@ -123,6 +123,25 @@ if ($isAdmin) {
 $cnt = $pdo->prepare("SELECT SUM(o.payment_mode = 'prepaid') AS a, SUM(o.payment_mode = 'cod' AND o.advance_amount > 0.004) AS b, SUM(o.payment_mode = 'cod' AND o.advance_amount <= 0.004) AS c FROM orders o" . $w);
 $cnt->execute($params);
 $kinds = $cnt->fetch();
+
+// buying cost per dealer (party) for the orders shown: pieces x the buying price saved on each order item. Manager only, All tab.
+$buyRows = [];
+if ($isAdmin && $mode === '') {
+    try {
+        $bq = $pdo->prepare(
+            "SELECT COALESCE(pa.name, 'Dealer not set') AS dealer, COALESCE(SUM(oi.qty), 0) AS pcs, COALESCE(SUM(oi.qty * oi.base_price), 0) AS buy
+             FROM order_items oi
+             JOIN orders o ON o.id = oi.order_id
+             LEFT JOIN parties pa ON pa.id = oi.party_id" . $w . "
+             GROUP BY oi.party_id, pa.name
+             ORDER BY buy DESC"
+        );
+        $bq->execute($params);
+        $buyRows = $bq->fetchAll();
+    } catch (Throwable $e) {
+        $buyRows = [];
+    }
+}
 $pages = max(1, (int)ceil($tot['c'] / $per));
 $page = min($page, $pages);
 
@@ -198,6 +217,26 @@ $plural = static fn(int $n, string $w): string => $n . ' ' . $w . ($n === 1 ? ''
   <?= $tile('Profit', e(inr($tot['p']))) ?>
 <?php endif; ?>
 </div>
+<?php if ($isAdmin && $mode === '' && $buyRows): ?>
+<?php
+$buyTotal = 0.0;
+$buyPcs = 0;
+foreach ($buyRows as $br) {
+    $buyTotal += (float)$br['buy'];
+    $buyPcs += (int)$br['pcs'];
+}
+$buyDay = $from !== '' && $to !== '' && $from === $to ? date('d M Y', strtotime($from))
+    : ($from !== '' || $to !== '' ? ($from !== '' ? date('d M Y', strtotime($from)) : 'start') . ' to ' . ($to !== '' ? date('d M Y', strtotime($to)) : 'today') : 'all dates');
+?>
+<h3 style="margin:4px 0 10px;font-size:16px">Buying cost by dealer <span class="mini" style="font-weight:600">· <?= e($buyDay) ?></span></h3>
+<div class="otiles">
+  <?php foreach ($buyRows as $br): ?>
+    <?= $tile($br['dealer'] . ' buying', e(inr($br['buy'])), e($plural((int)$br['pcs'], 'piece')), 'color:#0F766E') ?>
+  <?php endforeach; ?>
+  <?= $tile('Total buying', e(inr($buyTotal)), e($plural($buyPcs, 'piece')), 'color:#0F766E') ?>
+</div>
+<p class="hint" style="margin:-4px 0 12px">Buying = pieces x the buying price saved on each order, grouped by the dealer set on the product. It follows the date, status and salesperson filters above.</p>
+<?php endif; ?>
 <?php if ($isAdmin && $mode === 'cod_due' && $lump > 0.004): ?>
 <p class="hint" style="margin:-4px 0 12px"><?= e(inr($lump)) ?> of COD money came as one lump without an order number. It is not in these per-order numbers. The COD Amount page takes it off the total.</p>
 <?php endif; ?>
