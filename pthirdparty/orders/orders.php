@@ -4,6 +4,7 @@ require __DIR__ . '/includes/ops_lib.php';
 require __DIR__ . '/includes/buying_lib.php';
 require_once __DIR__ . '/includes/orders_lib.php';
 require_once __DIR__ . '/includes/simple_lib.php';
+require_once __DIR__ . '/includes/order_check_lib.php';
 $user = require_login();
 $pdo = db();
 $isAdmin = $user['role'] === 'admin';
@@ -25,6 +26,23 @@ $sales = $isAdmin ? (int)($_GET['sales'] ?? 0) : 0;
 $num = (int)($_GET['num'] ?? 0);
 $page = max(1, (int)($_GET['page'] ?? 1));
 $per = 50;
+
+// daily check (manager): Verify an order, then mark its dealer Bill done
+$chkReady = $isAdmin && order_check_ready($pdo);
+if ($isAdmin && $_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'check') {
+    csrf_verify();
+    try {
+        flash('ok', order_check_apply($pdo, (int)($_POST['id'] ?? 0), (string)($_POST['act'] ?? ''), (int)$user['id']));
+    } catch (RuntimeException $ex) {
+        flash('error', $ex->getMessage());
+    }
+    parse_str((string)($_POST['qs'] ?? ''), $back);
+    redirect('orders.php' . ($back ? '?' . http_build_query($back) : ''));
+}
+$chk = (string)($_GET['chk'] ?? '');
+if (!$chkReady || !in_array($chk, ['unverified', 'verified', 'bill_pending', 'billed'], true)) {
+    $chk = '';
+}
 
 if ($isAdmin && $mode === 'buying') {
     $bv = buying_prepare($pdo);
@@ -50,6 +68,15 @@ if (!$isAdmin) {
 if (in_array($status, ['created', 'dispatched', 'delivered', 'return_received', 'refunded'], true)) {
     $where[] = 'o.status = ?';
     $params[] = $status;
+}
+if ($chk === 'unverified') {
+    $where[] = 'o.verified_at IS NULL';
+} elseif ($chk === 'verified') {
+    $where[] = 'o.verified_at IS NOT NULL';
+} elseif ($chk === 'bill_pending') {
+    $where[] = 'o.verified_at IS NOT NULL AND o.billed_at IS NULL';
+} elseif ($chk === 'billed') {
+    $where[] = 'o.billed_at IS NOT NULL';
 }
 // Prepaid Orders = money taken at order time: fully prepaid orders, and COD orders that carried an advance.
 // COD Orders = the COD part only (total minus advance). A partial prepaid order is in both, but each tab counts only its own part.
@@ -147,7 +174,7 @@ $page = min($page, $pages);
 
 $st = $pdo->prepare(
     'SELECT o.id, o.order_date, o.customer_name, o.customer_phone, o.payment_mode, o.total, o.advance_amount, o.profit, o.status, o.tracking_id,
-            u.name AS sales_name, n.label AS num_label,' . ($isAdmin && orders_has_wa($pdo) ? ' o.wa_enforced, o.wa_status,' : '') . '
+            u.name AS sales_name, n.label AS num_label,' . ($isAdmin && orders_has_wa($pdo) ? ' o.wa_enforced, o.wa_status,' : '') . ($chkReady ? ' o.verified_at, o.billed_at,' : '') . '
             COALESCE((SELECT SUM(c.amount) FROM cod_receipts c WHERE c.order_id = o.id), 0) AS cod_received,
             (' . $preExpr . ') AS prepaid_amt, (' . $codExpr . ') AS cod_amt
      FROM orders o JOIN users u ON u.id = o.salesperson_id LEFT JOIN order_numbers n ON n.id = o.number_id' . $w .
@@ -247,6 +274,19 @@ $buyDay = $from !== '' && $to !== '' && $from === $to ? date('d M Y', strtotime(
 <p class="hint" style="margin:-4px 0 12px">A partial prepaid order shows in both Prepaid and COD, but each tab counts only its own part. Refunded orders are left out.</p>
 <?php endif; ?>
 
+<?php if ($chkReady): ?>
+<?php
+$ck = $pdo->prepare('SELECT COUNT(*) AS c, COALESCE(SUM(o.verified_at IS NOT NULL), 0) AS v, COALESCE(SUM(o.billed_at IS NOT NULL), 0) AS b FROM orders o' . $w);
+$ck->execute($params);
+$ckr = $ck->fetch();
+?>
+<div class="kchips" style="align-items:center">
+  <span class="tag tag-ok">Verified <?= (int)$ckr['v'] ?> of <?= (int)$ckr['c'] ?></span>
+  <span class="tag <?= (int)$ckr['c'] - (int)$ckr['v'] > 0 ? 'tag-warn' : 'tag-ok' ?>">Not verified <?= (int)$ckr['c'] - (int)$ckr['v'] ?></span>
+  <span class="tag tag-info">Bill done <?= (int)$ckr['b'] ?></span>
+  <span class="tag <?= (int)$ckr['v'] - (int)$ckr['b'] > 0 ? 'tag-warn' : 'tag-ok' ?>">Verified, bill pending <?= max(0, (int)$ckr['v'] - (int)$ckr['b']) ?></span>
+</div>
+<?php endif; ?>
 <section class="card">
   <form method="get" class="filters">
     <div><label for="q">Search</label><input id="q" name="q" type="text" value="<?= e($q) ?>" placeholder="Name, phone, tracking ID or order no."></div>
@@ -276,6 +316,16 @@ $buyDay = $from !== '' && $to !== '' && $from === $to ? date('d M Y', strtotime(
       <select id="num" name="num"><option value="0">All numbers</option>
         <?php foreach ($numList as $n): ?><option value="<?= (int)$n['id'] ?>"<?= $num === (int)$n['id'] ? ' selected' : '' ?>><?= e($n['label'] . ($n['phone'] ? ' - ' . $n['phone'] : '')) ?></option><?php endforeach; ?>
       </select></div>
+    <?php if ($chkReady): ?>
+    <div><label for="chk">Check</label>
+      <select id="chk" name="chk">
+        <option value="">All</option>
+        <option value="unverified"<?= $chk === 'unverified' ? ' selected' : '' ?>>Not verified</option>
+        <option value="verified"<?= $chk === 'verified' ? ' selected' : '' ?>>Verified</option>
+        <option value="bill_pending"<?= $chk === 'bill_pending' ? ' selected' : '' ?>>Verified, bill pending</option>
+        <option value="billed"<?= $chk === 'billed' ? ' selected' : '' ?>>Bill done</option>
+      </select></div>
+    <?php endif; ?>
     <?php if ($kind !== ''): ?><input type="hidden" name="kind" value="<?= e($kind) ?>"><?php endif; ?>
     <button class="btn" type="submit">Filter</button>
     <a class="btn btn-ghost linkbtn" href="orders.php<?= $mode !== '' ? '?mode=' . e($mode) : '' ?>">Clear</a>
@@ -288,7 +338,7 @@ $buyDay = $from !== '' && $to !== '' && $from === $to ? date('d M Y', strtotime(
   <?php else: ?>
   <div class="table-wrap">
     <table class="tight" style="min-width:<?= $mode === "" ? 760 : 900 ?>px">
-      <thead><tr><th>#</th><th>Date</th><th>Customer</th><th>Payment</th><th class="num">Total</th><?php if ($mode === 'prepaid'): ?><th class="num">Prepaid received</th><?php elseif ($mode === 'cod' || $mode === 'cod_due'): ?><th class="num">COD amount</th><th class="num">COD pending</th><?php endif; ?><th>Status</th><?php if ($isAdmin): ?><th>By</th><?php endif; ?></tr></thead>
+      <thead><tr><th>#</th><th>Date</th><th>Customer</th><th>Payment</th><th class="num">Total</th><?php if ($mode === 'prepaid'): ?><th class="num">Prepaid received</th><?php elseif ($mode === 'cod' || $mode === 'cod_due'): ?><th class="num">COD amount</th><th class="num">COD pending</th><?php endif; ?><th>Status</th><?php if ($isAdmin): ?><th>By</th><?php endif; ?><?php if ($chkReady): ?><th>Check</th><?php endif; ?></tr></thead>
       <tbody>
       <?php foreach ($rows as $r): ?>
         <?php
@@ -320,6 +370,28 @@ $buyDay = $from !== '' && $to !== '' && $from === $to ? date('d M Y', strtotime(
           <?php endif; ?>
           <td><span class="tag <?= e(status_tag_class($r['status'])) ?>"><?= e(status_label($r['status'])) ?></span><?= $isAdmin ? wa_badge($r) : '' ?></td>
           <?php if ($isAdmin): ?><td><?= e($r['sales_name']) ?></td><?php endif; ?>
+          <?php if ($chkReady): ?>
+          <td style="white-space:nowrap">
+            <form method="post" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0">
+              <?= csrf_field() ?>
+              <input type="hidden" name="action" value="check">
+              <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
+              <input type="hidden" name="qs" value="<?= e((string)($_SERVER['QUERY_STRING'] ?? '')) ?>">
+              <?php if ($r['verified_at'] === null): ?>
+                <button class="btn btn-sm" type="submit" name="act" value="verify">Verify</button>
+              <?php else: ?>
+                <span class="tag tag-ok" title="Verified <?= e($r['verified_at']) ?>">&#10003; Verified</span>
+                <?php if ($r['billed_at'] === null): ?>
+                  <button class="btn btn-accent btn-sm" type="submit" name="act" value="bill">Bill done</button>
+                  <button class="btn btn-ghost btn-sm" type="submit" name="act" value="unverify" title="Remove the verification">Undo</button>
+                <?php else: ?>
+                  <span class="tag tag-info" title="Bill done <?= e($r['billed_at']) ?>">&#10003; Bill done</span>
+                  <button class="btn btn-ghost btn-sm" type="submit" name="act" value="unbill" title="Remove the bill mark">Undo</button>
+                <?php endif; ?>
+              <?php endif; ?>
+            </form>
+          </td>
+          <?php endif; ?>
         </tr>
       <?php endforeach; ?>
       </tbody>
