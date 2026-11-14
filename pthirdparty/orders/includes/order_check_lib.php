@@ -84,3 +84,26 @@ function order_check_by_dealer(PDO $pdo, string $from, string $to): array
     $st->execute([$from, $to]);
     return $st->fetchAll();
 }
+
+/** The Check cell of one order row: the buttons for its current state. Used by the Orders page and by the in-place update after a click. */
+function order_check_cell_html(int $id, ?string $verifiedAt, ?string $billedAt, string $qs): string
+{
+    $h = '<form method="post" class="chk-form" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0">'
+        . csrf_field()
+        . '<input type="hidden" name="action" value="check">'
+        . '<input type="hidden" name="id" value="' . $id . '">'
+        . '<input type="hidden" name="qs" value="' . e($qs) . '">';
+    if ($verifiedAt === null) {
+        $h .= '<button class="btn btn-sm" type="submit" name="act" value="verify">Verify</button>';
+    } else {
+        $h .= '<span class="tag tag-ok" title="Verified ' . e($verifiedAt) . '">&#10003; Verified</span>';
+        if ($billedAt === null) {
+            $h .= '<button class="btn btn-accent btn-sm" type="submit" name="act" value="bill">Bill done</button>'
+                . '<button class="btn btn-ghost btn-sm" type="submit" name="act" value="unverify" title="Remove the verification">Undo</button>';
+        } else {
+            $h .= '<span class="tag tag-info" title="Bill done ' . e($billedAt) . '">&#10003; Bill done</span>'
+                . '<button class="btn btn-ghost btn-sm" type="submit" name="act" value="unbill" title="Remove the bill mark">Undo</button>';
+        }
+    }
+    return $h . '</form>';
+}
