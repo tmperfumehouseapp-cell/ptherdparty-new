@@ -44,6 +44,7 @@
     '.no-f input{height:46px;border-radius:12px;border:1px solid var(--field-line,#CBD5E1);background:var(--field,#F8FAFC);padding:0 12px;font:inherit;font-size:16px;color:inherit}',
     '.no-qty input{width:84px;text-align:center}',
     '.no-sell input{width:130px}',
+    '.no-fixed input{width:120px;background:#EEF1F5;font-weight:800;color:#0F766E;cursor:not-allowed;text-align:right}',
     '.no-line{min-width:92px;text-align:right;font-weight:800;font-variant-numeric:tabular-nums}',
     '.no-x{height:40px;border:0;background:transparent;color:#B91C1C;font-weight:800;cursor:pointer;padding:0 8px}',
     '.no-modal{position:fixed;inset:0;z-index:1000;display:flex;align-items:flex-start;justify-content:center;padding:6vh 14px 14px;background:rgba(15,23,42,.55)}',
@@ -62,7 +63,7 @@
     '.no-empty{padding:22px 12px;text-align:center;color:var(--muted,#64748B);font-weight:600}',
     '.no-stepper{display:contents}.no-step,.no-more,.no-progress,.no-next{display:none}',
     '.no-recent-h{display:none}',
-    '@media (max-width:560px){.no-sell input{width:110px}.no-modal{padding-top:3vh}}'
+    '@media (max-width:560px){.no-sell input{width:110px}.no-fixed input{width:100px}.no-modal{padding-top:3vh}}'
   ].join('\n');
   document.head.appendChild(css);
 
@@ -102,6 +103,7 @@
       '<label class="no-f no-qty">Qty<span class="no-stepper"><button type="button" class="no-step" data-d="-1" aria-label="One less">&minus;</button>' +
       '<input type="text" inputmode="numeric" name="items[' + key + '][qty]" value="' + esc(qty == null ? 1 : qty) + '" aria-label="Quantity">' +
       '<button type="button" class="no-step" data-d="1" aria-label="One more">+</button></span></label>' +
+      '<label class="no-f no-fixed">Buying price (fixed)<input type="text" readonly tabindex="-1" aria-readonly="true" value="' + esc(p.base != null ? inr(p.base) : 'Not set') + '" aria-label="Buying price, fixed"></label>' +
       '<label class="no-f no-sell">Sell price (₹)<input type="text" inputmode="decimal" name="items[' + key + '][sell_price]" value="' + esc(sell == null ? '' : sell) + '" placeholder="per piece" aria-label="Sell price"></label>' +
       '<div class="no-line" aria-label="Line total">₹0</div>' +
       '<button type="button" class="no-x" aria-label="Remove ' + esc(p.name) + '">Remove</button>' +
