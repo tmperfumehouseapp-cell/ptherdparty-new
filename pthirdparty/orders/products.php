@@ -85,6 +85,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $partyId = valid_party_id($_POST['party_id'] ?? 0);
         $pdo->prepare('UPDATE products SET party_id = ? WHERE id = ?')->execute([$partyId, $id]);
         flash('ok', 'Saved.');
+    } elseif ($action === 'update_many') {
+        // the common Save button: every changed party selection is saved in one go
+        $validSet = array_flip(array_map('intval', $pdo->query('SELECT id FROM parties')->fetchAll(PDO::FETCH_COLUMN)));
+        $curSt = $pdo->prepare('SELECT party_id FROM products WHERE id = ?');
+        $upSt = $pdo->prepare('UPDATE products SET party_id = ? WHERE id = ?');
+        $changed = 0;
+        foreach ((array)($_POST['parties'] ?? []) as $pid => $party) {
+            $pid = (int)$pid;
+            $party = (int)$party;
+            if ($pid <= 0) {
+                continue;
+            }
+            $new = ($party > 0 && isset($validSet[$party])) ? $party : null;
+            $curSt->execute([$pid]);
+            $cur = $curSt->fetch();
+            if (!$cur || ($cur['party_id'] === null ? null : (int)$cur['party_id']) === $new) {
+                continue;
+            }
+            $upSt->execute([$new, $pid]);
+            $changed++;
+        }
+        if ((string)($_POST['ajax'] ?? '') === '1') { // saved from the page: answer without reloading it
+            header('Content-Type: application/json; charset=utf-8');
+            echo json_encode(['ok' => true, 'changed' => $changed]);
+            exit;
+        }
+        flash('ok', $changed > 0 ? 'Saved ' . $changed . ' product' . ($changed === 1 ? '' : 's') . '.' : 'Nothing changed.');
     } elseif ($action === 'toggle') {
         $pdo->prepare('UPDATE products SET is_active = 1 - is_active WHERE id = ?')->execute([(int)($_POST['id'] ?? 0)]);
         flash('ok', 'Product updated.');
@@ -162,7 +189,14 @@ function party_options(array $parties, ?int $selected, string $first = 'No party
         <option value="missing"<?= $filter === 'missing' ? ' selected' : '' ?>>Missing party or buying price</option>
       </select>
       <button class="btn btn-ghost" type="submit">Search</button>
+      <button class="btn btn-accent" type="submit" form="party-form" id="party-save" disabled>Save changes</button>
     </form>
+    <form id="party-form" method="post" style="display:none">
+      <?= csrf_field() ?>
+      <input type="hidden" name="action" value="update_many">
+      <input type="hidden" name="ajax" value="0">
+    </form>
+    <div class="hint" id="party-msg" style="margin:-6px 0 12px" aria-live="polite">Choose the party on any products, then press Save changes once.</div>
 
     <?php if (!$rows): ?>
       <div class="empty"><?= $totalProducts ? 'No products match.' : 'No products yet. Click "Sync from website" on the right.' ?></div>
@@ -185,14 +219,15 @@ function party_options(array $parties, ?int $selected, string $first = 'No party
               <?php endif; ?>
             </td>
             <td colspan="3" style="padding:0;border-top:1px solid var(--line)">
-              <form method="post" style="display:flex;gap:8px;align-items:center;padding:8px 10px">
-                <?= csrf_field() ?>
-                <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
-                <select name="party_id" aria-label="Party for <?= e($r['name']) ?>" style="height:40px;flex:1 1 0;min-width:120px"><?= party_options($parties, $r['party_id'] !== null ? (int)$r['party_id'] : null) ?></select>
+              <div style="display:flex;gap:8px;align-items:center;padding:8px 10px">
+                <select name="parties[<?= (int)$r['id'] ?>]" form="party-form" class="party-sel" data-orig="<?= (int)($r['party_id'] ?? 0) ?>" aria-label="Party for <?= e($r['name']) ?>" style="height:40px;flex:1 1 0;min-width:120px"><?= party_options($parties, $r['party_id'] !== null ? (int)$r['party_id'] : null) ?></select>
                 <div style="flex:0 0 120px;font-weight:800"><?= $r['base_price'] !== null ? e(inr($r['base_price'])) : '<span class="tag tag-warn">Not on website</span>' ?></div>
-                <button class="btn btn-sm" type="submit" name="action" value="update">Save</button>
-                <button class="btn btn-ghost btn-sm" type="submit" name="action" value="toggle"><?= $r['is_active'] ? 'Off' : 'On' ?></button>
-              </form>
+                <form method="post" style="margin:0">
+                  <?= csrf_field() ?>
+                  <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
+                  <button class="btn btn-ghost btn-sm" type="submit" name="action" value="toggle"><?= $r['is_active'] ? 'Off' : 'On' ?></button>
+                </form>
+              </div>
             </td>
           </tr>
         <?php endforeach; ?>
@@ -231,4 +266,43 @@ function party_options(array $parties, ?int $selected, string $first = 'No party
     <?php endif; ?>
   </div>
 </div>
+<script>
+// One common Save: remembers which party selections were changed, saves them all together in the background (no page reload).
+(function () {
+  var form = document.getElementById('party-form'), btn = document.getElementById('party-save'), msg = document.getElementById('party-msg');
+  if (!form || !btn) { return; }
+  var sels = Array.prototype.slice.call(document.querySelectorAll('.party-sel'));
+  var base = msg ? msg.textContent : '';
+  function changed() { return sels.filter(function (s) { return s.value !== s.getAttribute('data-orig'); }); }
+  function refresh() {
+    var n = changed().length;
+    btn.disabled = n === 0;
+    btn.textContent = n ? 'Save changes (' + n + ')' : 'Save changes';
+    sels.forEach(function (s) { s.style.outline = s.value !== s.getAttribute('data-orig') ? '2px solid #16A34A' : ''; });
+  }
+  sels.forEach(function (s) { s.addEventListener('change', function () { refresh(); if (msg) { msg.style.color = ''; msg.textContent = base; } }); });
+  form.addEventListener('submit', function (ev) {
+    if (!window.fetch) { return; } // old browser: normal submit still works
+    ev.preventDefault();
+    var todo = changed();
+    if (!todo.length) { return; }
+    var fd = new FormData(form);
+    fd.set('ajax', '1');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    fetch('products.php', { method: 'POST', body: fd, credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { throw new Error('no'); }
+        todo.forEach(function (s) { s.setAttribute('data-orig', s.value); });
+        refresh();
+        if (msg) { msg.style.color = '#15803D'; msg.textContent = 'Saved ' + todo.length + ' product' + (todo.length === 1 ? '' : 's') + '.'; }
+      })
+      .catch(function () {
+        refresh();
+        if (msg) { msg.style.color = '#B91C1C'; msg.textContent = 'Could not save. Check your internet and press Save changes again.'; }
+      });
+  });
+  refresh();
+})();
+</script>
 <?php require __DIR__ . '/includes/footer.php'; ?>
