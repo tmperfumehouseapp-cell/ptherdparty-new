@@ -6,6 +6,8 @@
 // Rule 2: money that comes into your own accounts stays out of every party ledger. Instead it is "held for vendors":
 //         for an order, each party's share is its base cost, vendors first. COD remittances are split by hand.
 
+require_once __DIR__ . '/profit_mode_lib.php';
+
 /** Order number as shown everywhere: #0001. The database keeps the plain number 1. */
 function order_no($id): string
 {
@@ -36,14 +38,24 @@ function post_account_entry(PDO $pdo, int $userId, int $accountId, string $date,
 
     $partyId = account_party_id($pdo, $accountId);
     if ($partyId !== null && in_array($type, ['prepaid', 'cod', 'refund'], true)) {
+        // a dealer in "profit only" mode counts the order profit (once per order) instead of the whole amount
+        $counted = $amount;
+        $realAmount = null;
+        if ($orderId && profit_mode_on($pdo, $partyId)) {
+            $realAmount = $amount;
+            $counted = profit_mode_counted($pdo, $partyId, (int)$orderId, $dir === 'in' ? 'collected' : 'returned');
+        }
         $pdo->prepare(
             'INSERT INTO party_ledger (party_id, entry_date, entry_type, amount, account_id, ledger_id, note, created_by)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
         )->execute([
-            $partyId, $date, $dir === 'in' ? 'collected' : 'returned', $amount, $accountId, $ledgerId,
+            $partyId, $date, $dir === 'in' ? 'collected' : 'returned', $counted, $accountId, $ledgerId,
             ($dir === 'in' ? 'Customer money on your QR' : 'Refund paid from your QR') . ($orderId ? ' - order ' . order_no($orderId) : ($type === 'cod' ? ' - COD remittance' : '')),
             $userId,
         ]);
+        if ($realAmount !== null) {
+            $pdo->prepare('UPDATE party_ledger SET orig_amount = ? WHERE id = ?')->execute([$realAmount, (int)$pdo->lastInsertId()]);
+        }
     }
     return $ledgerId;
 }

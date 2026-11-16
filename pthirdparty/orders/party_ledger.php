@@ -5,6 +5,7 @@ require_once __DIR__ . '/includes/proof_lib.php';
 require_once __DIR__ . '/includes/simple_lib.php';
 require_once __DIR__ . '/includes/dealer_lib.php';
 require_once __DIR__ . '/includes/ledger_edit_lib.php';
+require_once __DIR__ . '/includes/profit_mode_lib.php';
 $user = require_admin();
 $pdo = db();
 
@@ -57,6 +58,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw $ex;
             }
             flash('ok', 'Payment of ' . inr($amt) . ' saved.');
+        } elseif ($action === 'profit_mode') {
+            $on = (string)($_POST['mode'] ?? '') === 'on';
+            $n = profit_mode_apply($pdo, $user, $partyId, $on);
+            flash('ok', $on
+                ? 'Profit-only mode is ON for ' . $party['name'] . '. ' . $n . ' QR entr' . ($n === 1 ? 'y' : 'ies') . ' recalculated.'
+                : 'Profit-only mode is OFF for ' . $party['name'] . '. ' . $n . ' QR entr' . ($n === 1 ? 'y' : 'ies') . ' restored to the real amount.');
         } elseif ($action === 'opening_edit') {
             // fix the opening entry of this dealer: who owes, amount, date (amount 0 removes it)
             $amt = round(abs(num($_POST['amount'] ?? 0)), 2);
@@ -83,8 +90,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     redirect(preg_match('~^(dealer_ledger|party_ledger)\.php(\?[A-Za-z0-9_=&%.\-]*)?$~', $backTo) ? $backTo : 'party_ledger.php?id=' . $partyId);
 }
 
+$pmReady = profit_mode_ready($pdo);
+$pmOn = $pmReady && profit_mode_on($pdo, $partyId);
 $entries = $pdo->prepare(
-    "SELECT l.id, l.entry_date, l.entry_type, l.amount, l.note, l.bill_id, l.ledger_id, a.name AS account, b.bill_no, " . (simple_has_details($pdo) ? 'b.details' : 'NULL') . " AS details,
+    "SELECT " . ($pmReady ? 'l.orig_amount, ' : 'NULL AS orig_amount, ') . "l.id, l.entry_date, l.entry_type, l.amount, l.note, l.bill_id, l.ledger_id, a.name AS account, b.bill_no, " . (simple_has_details($pdo) ? 'b.details' : 'NULL') . " AS details,
             pp.id AS proof_id, pp.method AS pay_method, pp.file AS proof_file
      FROM party_ledger l LEFT JOIN accounts a ON a.id = l.account_id LEFT JOIN bills b ON b.id = l.bill_id
      LEFT JOIN payment_proofs pp ON pp.kind = 'party_payment' AND pp.ref_id = l.id AND l.entry_type = 'payment'
@@ -135,6 +144,27 @@ require __DIR__ . '/includes/header.php';
       <a class="btn btn-ghost linkbtn" href="billing.php?dealer=<?= (int)$partyId ?>">See all bills</a>
     </section>
 
+    <section class="card" id="profit-mode">
+      <h2>Customer money on this dealer's QR</h2>
+      <?php if (!$pmReady): ?>
+        <div class="mini">The small database update for this could not be added yet. Reload the page once.</div>
+      <?php else: ?>
+      <p style="margin:0 0 10px;font-weight:600">
+        <?= $pmOn ? 'Profit only: when a customer pays on this dealer\'s QR, the balance goes down by the order profit, once per order.'
+                  : 'Whole amount: when a customer pays on this dealer\'s QR, the balance goes down by the full amount paid.' ?>
+        <span class="tag <?= $pmOn ? 'tag-ok' : '' ?>"><?= $pmOn ? 'Profit only: ON' : 'OFF' ?></span>
+      </p>
+      <form method="post" onsubmit="return confirm('<?= $pmOn ? 'Turn profit-only OFF for ' . e($party['name']) . '? All its QR entries go back to the full amount paid.' : 'Turn profit-only ON for ' . e($party['name']) . '? Its QR entries are recalculated to the order profit. The real amounts are saved and can be restored.' ?>');">
+        <?= csrf_field() ?>
+        <input type="hidden" name="action" value="profit_mode">
+        <input type="hidden" name="id" value="<?= (int)$partyId ?>">
+        <input type="hidden" name="mode" value="<?= $pmOn ? 'off' : 'on' ?>">
+        <button class="btn <?= $pmOn ? 'btn-ghost' : 'btn-accent' ?> btn-sm" type="submit"><?= $pmOn ? 'Turn off' : 'Turn on profit only' ?></button>
+      </form>
+      <div class="hint">Only this dealer is affected. Every recalculated entry keeps its real amount, so turning it off restores everything.</div>
+      <?php endif; ?>
+    </section>
+
     <section class="card">
       <h2>Ledger</h2>
       <p style="margin:-6px 0 10px"><a class="mini" href="ledger_entry.php?history=<?= (int)$partyId ?>">Edited / deleted entries</a></p>
@@ -155,6 +185,7 @@ require __DIR__ . '/includes/header.php';
               <?php if (!empty($r['proof_file'])): ?><a class="mini" href="proof.php?id=<?= (int)$r['proof_id'] ?>" target="_blank" rel="noopener">View screenshot</a><?php endif; ?>
               <?php if ($r['account']): ?><span class="mini"> <?= in_array($r['entry_type'], ['collected', 'returned'], true) ? 'on' : 'from' ?> <?= e($r['account']) ?></span><?php endif; ?>
               <?php if ($r['note']): ?><div class="mini"><?= e($r['note']) ?></div><?php endif; ?>
+              <?php if ($r['orig_amount'] !== null && abs((float)$r['orig_amount'] - (float)$r['amount']) > 0.004): ?><div class="mini">Customer paid <?= e(inr($r['orig_amount'])) ?> · counted: profit only</div><?php endif; ?>
               <?php if ($r['entry_type'] === 'opening'): ?>
               <details style="margin-top:6px"><summary class="btn btn-ghost btn-sm" style="display:inline-flex;cursor:pointer">Edit opening</summary>
                 <form method="post" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:10px">
