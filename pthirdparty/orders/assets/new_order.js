@@ -60,6 +60,7 @@
     '.no-item small{display:block;color:var(--muted,#64748B);font-weight:600}',
     '.no-item .no-buy{font-size:13px;font-weight:800;color:#0F766E;white-space:nowrap}',
     '.no-item .no-tag{font-size:12px;font-weight:800;color:#B45309;white-space:nowrap}',
+    '.chips input:disabled + label{opacity:.4;cursor:not-allowed}',
     '.no-empty{padding:22px 12px;text-align:center;color:var(--muted,#64748B);font-weight:600}',
     '.no-stepper{display:contents}.no-step,.no-more,.no-progress,.no-next{display:none}',
     '.no-recent-h{display:none}',
@@ -81,6 +82,44 @@
   /* ---------- rows ---------- */
   var rows = [];
   var seq = 0;
+
+  /* ---------- one order = one dealer; the payment QR follows the dealer ---------- */
+  var dealerQr = D.dealerQr || {};
+  var accNames = D.accountNames || {};
+  var lastAutoDealer = 0;
+  function curDealer() { return rows.length && byId[rows[0].pid] ? (byId[rows[0].pid].partyId || 0) : 0; }
+  // why a product cannot be added right now ('' = it can)
+  function blockReason(p) {
+    if (!p.hasBase) { return 'No buying price'; }
+    if (!p.partyId) { return 'No dealer set'; }
+    if (!dealerQr[p.partyId]) { return 'Dealer has no QR'; }
+    var cd = curDealer();
+    if (cd && cd !== p.partyId) { return 'Other dealer: separate order'; }
+    return '';
+  }
+  function applyQr() {
+    var note = $('qr-note'), ban = $('qr-banner');
+    var radios = Array.prototype.slice.call(form.querySelectorAll('input[name=account_id]'));
+    var cd = curDealer();
+    if (!cd || !dealerQr[cd]) {
+      lastAutoDealer = 0;
+      radios.forEach(function (r) { r.disabled = false; });
+      if (ban) { ban.hidden = true; }
+      return;
+    }
+    var accId = parseInt(dealerQr[cd], 10);
+    if (lastAutoDealer !== cd) { // a new dealer: pick its QR (the manager can change it afterwards)
+      radios.forEach(function (r) { r.checked = parseInt(r.value, 10) === accId; });
+      lastAutoDealer = cd;
+    }
+    radios.forEach(function (r) { r.disabled = !isAdmin && parseInt(r.value, 10) !== accId; });
+    var chosen = radios.filter(function (r) { return r.checked; })[0];
+    var chosenId = chosen ? parseInt(chosen.value, 10) : accId;
+    var dealer = byId[rows[0].pid].party || 'this dealer';
+    var txt = 'This order is for ' + dealer + '. Customer pays on: ' + (accNames[chosenId] || '') + (isAdmin ? (chosenId === accId ? ' (automatic, you can change it)' : ' (changed by you; the dealer QR is ' + (accNames[accId] || '') + ')') : ' (automatic)');
+    if (ban) { ban.hidden = false; ban.textContent = '👉 ' + txt; }
+    if (note) { note.textContent = txt; }
+  }
 
   function addRow(pid, qty, sell) {
     var p = byId[pid];
@@ -174,10 +213,11 @@
       return;
     }
     var itemHtml = function (p) {
-      var blocked = !p.hasBase;
+      var why = blockReason(p);
+      var blocked = why !== '';
       return '<button type="button" class="no-item" data-id="' + p.id + '"' + (blocked ? ' disabled style="opacity:.55;cursor:not-allowed"' : '') + '>' +
         '<span><b>' + esc(p.name) + '</b>' + (p.party ? '<small>' + esc(p.party) + '</small>' : '') + '</span>' +
-        (blocked ? '<span class="no-tag">No buying price</span>' : (p.base != null ? '<span class="no-buy">Buying ' + esc(inr(p.base)) + '</span>' : '')) +
+        (blocked ? '<span class="no-tag">' + esc(why) + '</span>' : (p.base != null ? '<span class="no-buy">Buying ' + esc(inr(p.base)) + '</span>' : '')) +
         '</button>';
     };
     var html = '';
@@ -281,6 +321,7 @@
       : count >= groups ? "10% unlocked on today's orders"
       : (groups - count) + (groups - count === 1 ? ' more order unlocks' : ' more orders unlock') + ' 10%');
 
+    applyQr();
     refreshGate(valid, total, cod, adv);
   }
 
@@ -446,6 +487,9 @@
   document.addEventListener('click', function () { setTimeout(mobileUpdate, 0); });
   window.addEventListener('resize', mobileUpdate);
   window.addEventListener('orientationchange', function () { setTimeout(mobileUpdate, 200); });
+
+  // the manager picked another QR chip: say so in the banner
+  form.addEventListener('change', function (ev) { if (ev.target && ev.target.name === 'account_id') { applyQr(); } });
 
   /* ---------- start ---------- */
   (D.old || []).forEach(function (o) { addRow(parseInt(o.product_id, 10), o.qty, o.sell_price); });

@@ -168,15 +168,8 @@ function create_order(PDO $pdo, array $user, array $post, array $files = []): in
     // Prepaid = full amount received now. COD = an advance received now, the rest on delivery.
     // There is no full COD: a COD order must have an advance.
     $mode = (($post['payment_mode'] ?? '') === 'cod') ? 'cod' : 'prepaid';
-    $st = $pdo->prepare('SELECT id FROM accounts WHERE id = ? AND is_active = 1');
-    $st->execute([(int)($post['account_id'] ?? 0)]);
-    $accountId = $st->fetchColumn();
-    if (!$accountId) {
-        throw new RuntimeException($mode === 'cod'
-            ? 'Choose the account the advance came into.'
-            : 'Choose the account the money came into.');
-    }
-    $accountId = (int)$accountId;
+    // the account is decided from the products' dealer after the lines are read (see order_resolve_account below)
+    $postedAccount = (int)($post['account_id'] ?? 0);
 
     // which of your numbers the order was placed on (required once you have added numbers)
     $numberIds = array_map('intval', $pdo->query('SELECT id FROM order_numbers WHERE is_active = 1')->fetchAll(PDO::FETCH_COLUMN));
@@ -231,6 +224,7 @@ function create_order(PDO $pdo, array $user, array $post, array $files = []): in
         }
         $lines[] = [
             'product_id' => $pid,
+            'name'       => $p['name'],
             'party_id'   => $p['party_id'] !== null ? (int)$p['party_id'] : null,
             'qty'        => $qty,
             'base'       => round((float)$base, 2),
@@ -241,6 +235,9 @@ function create_order(PDO $pdo, array $user, array $post, array $files = []): in
     if (!$lines) {
         throw new RuntimeException('Add at least one product.');
     }
+    // one order = one dealer; the money goes to that dealer's QR (only the manager may pick another account)
+    require_once __DIR__ . '/order_dealer_lib.php';
+    $accountId = order_resolve_account($pdo, $user, $lines, $postedAccount);
 
     $subtotal = 0.0;
     foreach ($lines as $l) {
