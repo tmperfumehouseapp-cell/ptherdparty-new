@@ -6,6 +6,7 @@ require_once __DIR__ . '/includes/simple_lib.php';
 require_once __DIR__ . '/includes/dealer_lib.php';
 require_once __DIR__ . '/includes/ledger_edit_lib.php';
 require_once __DIR__ . '/includes/profit_mode_lib.php';
+require_once __DIR__ . '/includes/qr_move_lib.php';
 $user = require_admin();
 $pdo = db();
 
@@ -58,6 +59,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw $ex;
             }
             flash('ok', 'Payment of ' . inr($amt) . ' saved.');
+        } elseif ($action === 'move_entry') {
+            // customer money recorded on the wrong dealer's QR: take it out of this dealer and put it into the chosen dealer's QR account
+            flash('ok', qr_move_entry($pdo, $user, (int)($_POST['entry_id'] ?? 0), $partyId, (int)($_POST['to_account'] ?? 0)));
         } elseif ($action === 'profit_mode') {
             $on = (string)($_POST['mode'] ?? '') === 'on';
             $n = profit_mode_apply($pdo, $user, $partyId, $on);
@@ -90,6 +94,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     redirect(preg_match('~^(dealer_ledger|party_ledger)\.php(\?[A-Za-z0-9_=&%.\-]*)?$~', $backTo) ? $backTo : 'party_ledger.php?id=' . $partyId);
 }
 
+$moveTargets = qr_move_targets($pdo, $partyId);
 $pmReady = profit_mode_ready($pdo);
 $pmOn = $pmReady && profit_mode_on($pdo, $partyId);
 $entries = $pdo->prepare(
@@ -186,6 +191,26 @@ require __DIR__ . '/includes/header.php';
               <?php if ($r['account']): ?><span class="mini"> <?= in_array($r['entry_type'], ['collected', 'returned'], true) ? 'on' : 'from' ?> <?= e($r['account']) ?></span><?php endif; ?>
               <?php if ($r['note']): ?><div class="mini"><?= e($r['note']) ?></div><?php endif; ?>
               <?php if ($r['orig_amount'] !== null && abs((float)$r['orig_amount'] - (float)$r['amount']) > 0.004): ?><div class="mini">Customer paid <?= e(inr($r['orig_amount'])) ?> · counted: profit only</div><?php endif; ?>
+              <?php if (in_array($r['entry_type'], ['collected', 'returned'], true) && $r['ledger_id'] !== null): ?>
+              <details style="margin-top:6px"><summary class="btn btn-ghost btn-sm" style="display:inline-flex;cursor:pointer">Move to another dealer</summary>
+                <?php if (!$moveTargets): ?>
+                  <div class="hint">No other dealer has a QR account yet. Create one on the Accounts page first.</div>
+                <?php else: ?>
+                <form method="post" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:10px" onsubmit="return confirm('Move this entry (<?= e(inr($r['orig_amount'] ?? $r['amount'])) ?>) to the dealer you chose? It is removed from <?= e($party['name']) ?> and added to the other dealer.');">
+                  <?= csrf_field() ?>
+                  <input type="hidden" name="action" value="move_entry">
+                  <input type="hidden" name="id" value="<?= (int)$partyId ?>">
+                  <input type="hidden" name="entry_id" value="<?= (int)$r['id'] ?>">
+                  <div class="field" style="margin:0;flex:1 1 220px"><label>Move to this dealer's QR</label>
+                    <select name="to_account" required><option value="">Choose dealer</option>
+                      <?php foreach ($moveTargets as $mt): ?><option value="<?= (int)$mt['id'] ?>"><?= e($mt['dealer'] . ' - ' . $mt['account']) ?></option><?php endforeach; ?>
+                    </select></div>
+                  <button class="btn btn-accent btn-sm" type="submit">Move</button>
+                </form>
+                <div class="hint">The money also moves to that dealer's QR account. The amount counted follows the other dealer's setting (whole amount or profit only). Kept in the change history.</div>
+                <?php endif; ?>
+              </details>
+              <?php endif; ?>
               <?php if ($r['entry_type'] === 'opening'): ?>
               <details style="margin-top:6px"><summary class="btn btn-ghost btn-sm" style="display:inline-flex;cursor:pointer">Edit opening</summary>
                 <form method="post" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:10px">
