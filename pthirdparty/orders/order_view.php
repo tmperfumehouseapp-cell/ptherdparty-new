@@ -6,6 +6,7 @@ require __DIR__ . '/includes/ops_lib.php';
 require_once __DIR__ . '/includes/proof_lib.php';
 require_once __DIR__ . '/includes/dealer_send_lib.php';
 require_once __DIR__ . '/includes/shiprocket_lib.php';
+require_once __DIR__ . '/includes/order_account_lib.php';
 $user = require_login();
 $pdo = db();
 $isAdmin = $user['role'] === 'admin';
@@ -55,6 +56,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif (!$isAdmin) {
             http_response_code(403);
             exit('Admin only.');
+        } elseif ($action === 'pay_account') {
+            flash('ok', order_pay_account_change($pdo, $user, $id, (int)($_POST['ledger_id'] ?? 0), (int)($_POST['to_account'] ?? 0)));
         } elseif ($action === 'wa_resend') {
             $r = wa_send_confirmation($pdo, $id, (int)$user['id']);
             flash($r['ok'] ? 'ok' : 'error', $r['ok'] ? 'Confirmation sent to WhatsApp. The status updates when WhatsApp reports back.' : (string)($r['error'] ?? 'Could not send.'));
@@ -207,6 +210,8 @@ if (orders_has_comm($pdo)) {
     }
 }
 
+$payRows = $isAdmin ? order_pay_rows($pdo, $id) : [];
+$payAccounts = $isAdmin ? order_pay_accounts($pdo) : [];
 $accounts = $pdo->query('SELECT id, name FROM accounts WHERE is_active = 1 ORDER BY name')->fetchAll();
 $accOpts = '';
 foreach ($accounts as $a) {
@@ -243,9 +248,36 @@ require __DIR__ . '/includes/header.php';
         <div><div class="k">Payment</div><div class="v"><?= $order['payment_mode'] === 'cod' ? 'COD' : 'Prepaid' ?></div></div>
         <div><div class="k">Salesperson</div><div class="v"><?= e($order['salesperson_name']) ?></div></div>
         <?php if ($numLabel !== ''): ?><div><div class="k">Placed on number</div><div class="v"><?= e($numLabel) ?></div></div><?php endif; ?>
+        <?php if ($isAdmin && $payRows): ?><div><div class="k">Payment received in</div><div class="v"><?= e(implode(', ', array_unique(array_map(static fn($pr) => $pr['account'], $payRows)))) ?></div></div><?php endif; ?>
       </div>
       <p class="hint" style="margin-top:10px"><?= e($order['address']) ?> - <?= e($order['pincode']) ?></p>
     </section>
+
+    <?php if ($isAdmin && $payRows): ?>
+    <section class="card" id="pay-account">
+      <h2>Payment account</h2>
+      <?php foreach ($payRows as $pr): ?>
+      <div style="margin-bottom:12px">
+        <b><?= e(inr($pr['amount'])) ?></b> received on <?= e(date('d M Y', strtotime($pr['entry_date']))) ?> in
+        <span class="tag tag-info"><?= e($pr['account']) ?></span><?php if ($pr['dealer']): ?> <span class="mini">· dealer <?= e($pr['dealer']) ?></span><?php endif; ?>
+        <details style="margin-top:8px"><summary class="btn btn-ghost btn-sm" style="display:inline-flex;cursor:pointer">Edit account</summary>
+          <form method="post" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:10px" onsubmit="return confirm('Move this payment to the account you chose? Dealer ledgers and held money are updated to match.');">
+            <?= csrf_field() ?>
+            <input type="hidden" name="action" value="pay_account">
+            <input type="hidden" name="id" value="<?= (int)$id ?>">
+            <input type="hidden" name="ledger_id" value="<?= (int)$pr['id'] ?>">
+            <div class="field" style="margin:0;flex:1 1 240px"><label>Received in</label>
+              <select name="to_account" required><option value="">Choose account</option>
+                <?php foreach ($payAccounts as $pa): ?><option value="<?= (int)$pa['id'] ?>"<?= (int)$pa['id'] === (int)$pr['account_id'] ? ' disabled' : '' ?>><?= e($pa['name'] . ($pa['dealer'] ? ' (dealer ' . $pa['dealer'] . ' QR)' : ' (own account)')) ?></option><?php endforeach; ?>
+              </select></div>
+            <button class="btn btn-accent btn-sm" type="submit">Save account</button>
+          </form>
+          <div class="hint">Moving it between dealer QRs moves the entry from one dealer's ledger to the other. Moving it to your own account removes it from the dealer ledger. Kept in the change history.</div>
+        </details>
+      </div>
+      <?php endforeach; ?>
+    </section>
+    <?php endif; ?>
 
     <section class="card">
       <h2>Items</h2>
