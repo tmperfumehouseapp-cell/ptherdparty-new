@@ -7,6 +7,7 @@
 require __DIR__ . '/includes/bootstrap.php';
 require __DIR__ . '/includes/ops_lib.php';
 require_once __DIR__ . '/includes/dealer_lib.php';
+require_once __DIR__ . '/includes/ledger_edit_lib.php';
 $user = require_admin();
 $pdo = db();
 
@@ -64,6 +65,55 @@ $url = static function (array $over) use ($tab, $dealer, $from, $to, $type, $pay
 
 $dateInput = 'style="width:100%;height:48px;border-radius:12px;border:1px solid var(--field-line);background:var(--field);padding:0 12px"';
 $hasKind = dealer_has_paykind($pdo);
+
+// ----- edit the opening entry of one dealer (manager only). Every change is kept in the change history. -----
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'opening_save') {
+    csrf_verify();
+    try {
+        if ($dealer <= 0) {
+            throw new RuntimeException('Choose the dealer first.');
+        }
+        $entryId = (int)($_POST['entry_id'] ?? 0);
+        $amt = round(abs(num($_POST['amount'] ?? 0)), 2);
+        if (($_POST['who'] ?? 'i_owe') === 'owes_me') {
+            $amt = -$amt; // the dealer owes you: stored as a negative opening
+        }
+        $date = valid_date((string)($_POST['entry_date'] ?? ''));
+        if ($date === null) {
+            throw new RuntimeException('Enter the opening date.');
+        }
+        ledger_audit_ensure($pdo);
+        in_tx($pdo, function () use ($pdo, $user, $dealer, $entryId, $amt, $date) {
+            $old = null;
+            if ($entryId > 0) {
+                $q = $pdo->prepare("SELECT id, entry_date, amount FROM party_ledger WHERE id = ? AND party_id = ? AND entry_type = 'opening' FOR UPDATE");
+                $q->execute([$entryId, $dealer]);
+                $old = $q->fetch() ?: null;
+                if (!$old) {
+                    throw new RuntimeException('That opening entry was not found. Refresh the page.');
+                }
+            }
+            if ($old === null) {
+                if (abs($amt) < 0.005) {
+                    throw new RuntimeException('Enter the opening amount.');
+                }
+                $pdo->prepare("INSERT INTO party_ledger (party_id, entry_date, entry_type, amount, note, created_by) VALUES (?, ?, 'opening', ?, 'Opening balance', ?)")
+                    ->execute([$dealer, $date, $amt, (int)$user['id']]);
+                ledger_audit_add($pdo, $dealer, (int)$pdo->lastInsertId(), 'add', null, ['entry_date' => $date, 'amount' => $amt], (int)$user['id']);
+            } elseif (abs($amt) < 0.005) { // amount 0 removes the opening entry
+                $pdo->prepare('DELETE FROM party_ledger WHERE id = ?')->execute([(int)$old['id']]);
+                ledger_audit_add($pdo, $dealer, (int)$old['id'], 'delete', ['entry_date' => $old['entry_date'], 'amount' => (float)$old['amount']], null, (int)$user['id']);
+            } else {
+                $pdo->prepare('UPDATE party_ledger SET entry_date = ?, amount = ? WHERE id = ?')->execute([$date, $amt, (int)$old['id']]);
+                ledger_audit_add($pdo, $dealer, (int)$old['id'], 'edit', ['entry_date' => $old['entry_date'], 'amount' => (float)$old['amount']], ['entry_date' => $date, 'amount' => $amt], (int)$user['id']);
+            }
+        });
+        flash('ok', 'Opening entry saved. The dealer balance is recalculated.');
+    } catch (RuntimeException $ex) {
+        flash('error', $ex->getMessage());
+    }
+    redirect($url(['tab' => 'ledger', 'dealer' => $dealer ?: '']) . '#opening');
+}
 
 /** "₹1,200 owed" / "₹300 advance" / "Settled" */
 $bal = static function (float $b): string {
@@ -346,6 +396,42 @@ require __DIR__ . '/includes/header.php';
     Balance today is <?= e($bal($nowBal)) ?>; once those are billed it becomes about <?= e($bal($nowBal + $pt['pend_value'])) ?>.
     <a class="rowlink" href="<?= e($url(['tab' => 'dispatch', 'from' => '', 'to' => ''])) ?>">See pending products</a>
   </div>
+  <?php endif; ?>
+</section>
+
+<?php
+  $openQ = $pdo->prepare("SELECT id, entry_date, amount FROM party_ledger WHERE party_id = ? AND entry_type = 'opening' ORDER BY entry_date, id");
+  $openQ->execute([$dealer]);
+  $openRows = $openQ->fetchAll();
+  $openForm = static function (?array $o) use ($url, $dealer, $today): string {
+      $amt = $o ? (float)$o['amount'] : 0.0;
+      ob_start(); ?>
+    <form method="post" action="<?= e($url(['tab' => 'ledger', 'dealer' => $dealer])) ?>" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:10px">
+      <?= csrf_field() ?>
+      <input type="hidden" name="action" value="opening_save">
+      <input type="hidden" name="entry_id" value="<?= $o ? (int)$o['id'] : 0 ?>">
+      <div class="field" style="margin:0;flex:1 1 170px"><label>Who owes?</label>
+        <select name="who"><option value="i_owe"<?= $amt >= 0 ? ' selected' : '' ?>>I owe the dealer</option><option value="owes_me"<?= $amt < 0 ? ' selected' : '' ?>>The dealer owes me</option></select></div>
+      <div class="field" style="margin:0;flex:1 1 150px"><label>Amount (₹)</label><input name="amount" type="text" inputmode="decimal" value="<?= $o ? e((string)abs($amt)) : '' ?>" placeholder="0"></div>
+      <div class="field" style="margin:0;flex:1 1 170px"><label>Opening date</label><input name="entry_date" type="date" value="<?= e($o ? $o['entry_date'] : $today) ?>" style="width:100%;height:48px;border-radius:12px;border:1px solid var(--field-line);background:var(--field);padding:0 12px"></div>
+      <button class="btn btn-accent" type="submit">Save opening</button>
+    </form>
+<?php return ob_get_clean();
+  };
+?>
+<section class="card" id="opening" style="margin-top:16px">
+  <h2>Opening entry · <?= e($dealerName) ?></h2>
+  <?php if (!$openRows): ?>
+    <div class="mini">No opening entry for this dealer yet. Add the starting balance if there is one.</div>
+    <details style="margin-top:8px"><summary class="btn btn-ghost btn-sm" style="display:inline-flex;cursor:pointer">Add opening entry</summary><?= $openForm(null) ?></details>
+  <?php else: ?>
+    <?php foreach ($openRows as $o): ?>
+      <div style="margin-bottom:10px">
+        <b><?= e($bal((float)$o['amount'])) ?></b> <span class="mini">· dated <?= e(dealer_dlabel($o['entry_date'])) ?></span>
+        <details style="margin-top:6px"><summary class="btn btn-ghost btn-sm" style="display:inline-flex;cursor:pointer">Edit opening entry</summary><?= $openForm($o) ?>
+          <div class="hint">Set the amount to 0 to remove the opening entry. Every change is kept in the change history, and the balance is recalculated.</div></details>
+      </div>
+    <?php endforeach; ?>
   <?php endif; ?>
 </section>
 

@@ -1,0 +1,73 @@
+/* 3 PARTY theme: cream background, red accent, white rounded cards, red pill buttons.
+   Loaded LAST on every page, so it wins over the other design files without editing them.
+   To change the colours later, change only the values in :root below. */
+:root {
+  --bg: #FDFAF3;            /* warm cream page */
+  --card: #FFFFFF;
+  --ink: #1F2430;
+  --muted: #6B7280;
+  --line: #EFE8DB;
+  --field: #FBF8F1;
+  --field-line: #E4DBCB;
+  --accent: #D32030;        /* red */
+  --accent-ink: #FFFFFF;    /* text on red */
+  --accent-soft: #FDECEC;   /* light pink */
+  --accent-deep: #B91C1C;   /* dark red text */
+  --navy: #2B1B1D;          /* dark warm panels (order summary, progress) */
+}
+body { background: var(--bg); color: var(--ink); }
+a { color: var(--accent-deep); }
+.rowlink { color: var(--accent-deep); }
+::selection { background: #F8CFCF; }
+
+/* side menu */
+.side { background: #fff; border-right: 1px solid var(--line); }
+.logo { background: var(--accent); color: #fff; }
+.avatar { background: var(--accent); color: #fff; }
+.nav-item { color: #4B5563; }
+.nav-item:hover { background: var(--accent-soft); color: var(--accent-deep); }
+.nav-item.is-active { background: var(--accent-soft); color: var(--accent-deep); box-shadow: inset 0 0 0 1px #F6C9C9; }
+
+/* cards and tiles: white, soft border, gentle shadow */
+.card, .stat, .tile { border: 1px solid var(--line); border-radius: 16px; box-shadow: 0 1px 2px rgba(120, 80, 40, .05), 0 6px 18px rgba(120, 80, 40, .05); }
+.stat, .tile { box-shadow: 0 1px 2px rgba(120, 80, 40, .04); }
+
+/* buttons: red primary, outlined secondary */
+.btn { border-color: var(--field-line); color: var(--ink); }
+.btn:hover { background: var(--accent-soft); border-color: #F0C4C4; color: var(--accent-deep); box-shadow: none; }
+.btn-accent, .cta { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn-accent:hover, .cta:hover { background: var(--accent-deep); border-color: var(--accent-deep); color: #fff; }
+.btn-ghost { background: transparent; }
+.btn-danger { color: var(--accent-deep); border-color: #F3B4B4; }
+.btn:disabled, .cta:disabled { background-image: none; }
+.btn-accent:disabled, .cta:disabled { background: var(--accent); border-color: var(--accent); color: #fff; opacity: .5; }
+
+/* inputs */
+input:focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(211, 32, 48, .15); }
+:focus-visible { outline-color: var(--accent); }
+input[type=radio], input[type=checkbox] { accent-color: var(--accent); }
+
+/* choice chips and the Prepaid / COD switch */
+.seg { background: #F3ECE0; }
+.seg input:checked + label { background: var(--accent); color: #fff; }
+.chips input:checked + label { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* progress, steps, summary panel */
+.meter-fill, .fill { background: var(--accent); }
+.step-n { background: var(--accent); color: #fff; }
+.tick { background: var(--accent); }
+.summary .cta { background: var(--accent); color: #fff; }
+
+/* small badges: keep the traffic-light meaning, soften the "info" one to the theme */
+.tag { background: #F3ECE0; color: #4B5563; }
+.tag-info { background: var(--accent-soft); color: var(--accent-deep); }
+.tag-ok { background: #DCFCE7; color: #166534; }
+.tag-warn { background: #FEF3C7; color: #92400E; }
+.tag-bad { background: #FEE2E2; color: #991B1B; }
+
+/* tables */
+th { color: var(--muted); }
+.table-wrap tr:hover td { background: #FFFDF8; }
+.empty { background: var(--field); }
+.hint, .mini, .k { color: var(--muted); }
+.flash { border-radius: 14px; }
