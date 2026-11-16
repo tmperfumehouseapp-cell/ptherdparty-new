@@ -29,14 +29,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 // buying prices come from the website only: copied in here every few minutes, never typed
 $costSync = sync_website_costs($pdo, $config, (int)$user['id'], 300, 8);
-$accounts = $pdo->query('SELECT id, name FROM accounts WHERE is_active = 1 ORDER BY name')->fetchAll();
+$accounts = $pdo->query('SELECT id, name, party_id FROM accounts WHERE is_active = 1 ORDER BY name')->fetchAll();
+// each dealer's QR account (the first active account linked to the dealer): the money of that dealer's products goes there
+$dealerQr = [];
+foreach ($pdo->query('SELECT id, party_id FROM accounts WHERE is_active = 1 AND party_id IS NOT NULL ORDER BY id')->fetchAll() as $qa) {
+    if (!isset($dealerQr[(int)$qa['party_id']])) {
+        $dealerQr[(int)$qa['party_id']] = (int)$qa['id'];
+    }
+}
+$accountNames = [];
+foreach ($accounts as $qa) {
+    $accountNames[(int)$qa['id']] = $qa['name'];
+}
 $numbers = $pdo->query('SELECT id, label, phone FROM order_numbers WHERE is_active = 1 ORDER BY label')->fetchAll();
 $groups = active_groups($pdo);
 $refReady = ref_migrate($pdo); // the two columns for the reference notes and image
 
 // products for the search box: id, name, party, current base price
 $prodRows = $pdo->query(
-    "SELECT p.id, p.name, pa.name AS party,
+    "SELECT p.id, p.name, p.party_id, pa.name AS party,
             (SELECT pp.base_price FROM product_prices pp WHERE pp.product_id = p.id ORDER BY pp.id DESC LIMIT 1) AS base
      FROM products p
      LEFT JOIN parties pa ON pa.id = p.party_id
@@ -49,6 +60,7 @@ foreach ($prodRows as $r) {
         'id'    => (int)$r['id'],
         'name'  => $r['name'],
         'party' => $r['party'],
+        'partyId' => $r['party_id'] !== null ? (int)$r['party_id'] : 0,
         // the fixed buying price (copied from the website, never typed) is shown to everyone as read-only text.
         // The server always re-reads it from the database when the order is saved, so nothing posted can change it.
         'base'  => $r['base'] !== null ? (float)$r['base'] : null,
@@ -87,6 +99,8 @@ if ($old && !empty($old['items']) && is_array($old['items'])) {
 
 $data = [
     'products' => $products,
+    'dealerQr' => (object)$dealerQr,
+    'accountNames' => (object)$accountNames,
     'stats'    => (object)$stats,
     'groups'   => $groups,
     'selfId'   => (int)$user['id'],
@@ -138,6 +152,7 @@ require __DIR__ . '/includes/header.php';
                   <label for="acc-<?= (int)$a['id'] ?>"><?= e($a['name']) ?></label>
                 <?php endforeach; ?>
               </div>
+              <div class="hint" id="qr-note" style="margin-top:8px;font-weight:700"><?= $isAdmin ? 'The right QR is chosen automatically when you add the product. You can change it.' : 'The right QR is chosen automatically when you add the product.' ?></div>
             <?php endif; ?>
           </div>
         </div>
@@ -217,6 +232,7 @@ require __DIR__ . '/includes/header.php';
             <?php if ($costSync['error'] !== ''): ?><b style="color:var(--warn)">Could not reach the website just now (<?= e($costSync['error']) ?>), so the last copied prices are shown.</b><?php endif; ?>
           </div>
         <?php endif; ?>
+        <div id="qr-banner" class="hint" hidden style="margin:0 0 12px;padding:12px 14px;border-radius:12px;background:var(--accent-soft,#FDECEC);color:var(--accent-deep,#B91C1C);font-weight:800"></div>
         <div id="rows" class="rows"></div>
         <div class="rows-foot">
           <button type="button" id="add-row" class="btn btn-ghost">+ Add product</button>
