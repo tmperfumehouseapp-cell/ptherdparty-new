@@ -35,10 +35,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <?php if (!is_file(__DIR__ . '/assets/style.css')): ?><link rel="stylesheet" href="assets/fallback.css?v=<?= (int)@filemtime(__DIR__ . '/assets/fallback.css') ?>">
 <?php endif; ?>
 <?php if (is_file(__DIR__ . '/assets/style.css')): ?><link rel="stylesheet" href="assets/style.css?v=<?= (int)@filemtime(__DIR__ . '/assets/style.css') ?>"><?php endif; ?>
+<link rel="stylesheet" href="assets/theme.css?v=<?= (int)@filemtime(__DIR__ . '/assets/theme.css') ?>">
 </head>
 <body class="auth">
 <form class="auth-card" method="post">
-  <div class="brand"><span class="logo">OD</span><span class="brand-name">Order Desk</span></div>
+  <div class="brand"><span class="logo">3P</span><span class="brand-name">Order Desk</span></div>
   <h1>Welcome back</h1>
   <p>Log in to create orders and track your earnings.</p>
   <?php foreach (flash_pull() as $f): ?><div class="flash flash-<?= e($f['type']) ?>"><?= e($f['msg']) ?></div><?php endforeach; ?>

@@ -45,11 +45,12 @@ foreach (array_filter(['assets/style.css', !empty($extraCss) ? (string)$extraCss
 <?php endif; ?>
 <?php if (!empty($extraCss) && !in_array((string)$extraCss, $cssGone, true)): ?><link rel="stylesheet" href="<?= e($extraCss) ?>?v=<?= $cssV((string)$extraCss) ?>">
 <?php endif; ?>
+<link rel="stylesheet" href="assets/theme.css?v=<?= $cssV('assets/theme.css') ?>">
 </head>
 <body>
 <div class="shell">
   <nav class="side" aria-label="Main">
-    <div class="brand"><span class="logo">OD</span><span class="brand-name">Order Desk</span></div>
+    <div class="brand"><span class="logo">3P</span><span class="brand-name">Order Desk</span></div>
     <?php foreach ($nav as $n): ?>
       <?php if ($n['admin'] && !$isAdmin) continue; ?>
       <?php if ($n['ready']): ?>
