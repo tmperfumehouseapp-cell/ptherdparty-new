@@ -1,0 +1,52 @@
+/* 3RD PARTY · Order Desk theme (red / cream). Loaded LAST by includes/header.php.
+   Colours, shapes and type only: no layout or logic is changed. Remove this one file to go back to the old look. */
+:root {
+  --ink: #1B1B1B; --muted: #6B6B6B; --line: #EFE9DA; --card: #FFFFFF; --bg: #FFFCF3;
+  --field: #FFFDF8; --field-line: #E6DFCC;
+  --accent: #C8232C; --accent-ink: #FFFFFF; --accent-soft: #FFF1EC; --accent-deep: #A81B23;
+  --navy: #C8232C; --ok: #15803D; --warn: #B45309; --bad: #B42318;
+}
+body { background: var(--bg); color: var(--ink); font-family: Manrope, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+a { color: #A81B23; }
+h1, h2, h3 { font-weight: 800; }
+
+/* sidebar */
+.side { background: #fff; border-right: 1px solid var(--line); }
+.brand .logo { background: linear-gradient(145deg, #D8303A, #A81B23); color: #fff; box-shadow: 0 6px 14px rgba(200,35,44,.35); }
+.brand-name { color: var(--ink); font-weight: 800; }
+.nav-item { color: #3F3F3F; border-radius: 14px; }
+.nav-item:hover { background: var(--accent-soft); color: var(--accent-deep); }
+.nav-item.is-active { background: var(--accent-soft); color: var(--accent-deep); box-shadow: inset 3px 0 0 var(--accent); }
+.avatar { background: var(--accent); color: #fff; }
+
+/* cards and numbers */
+.card, .stat, .tile { border: 0 !important; border-radius: 22px !important; background: #fff; box-shadow: 0 2px 4px rgba(60,40,10,.05), 0 12px 28px rgba(60,40,10,.07) !important; }
+.stat .k, .tile .k { color: var(--muted); font-weight: 700; }
+.stat .v, .tile .v { color: var(--ink); font-weight: 800; }
+
+/* buttons */
+.btn { border-radius: 999px; font-weight: 800; }
+.btn-accent { background: var(--accent); border-color: var(--accent); color: #fff; box-shadow: 0 8px 20px rgba(200,35,44,.3); }
+.btn-accent:hover { background: var(--accent-deep); border-color: var(--accent-deep); }
+.btn-ghost { background: #fff; border: 1.5px solid var(--accent); color: var(--accent); }
+.btn-ghost:hover { background: var(--accent-soft); }
+.btn-danger { background: #fff; border: 1.5px solid #FCA5A5; color: var(--bad); }
+
+/* fields */
+input[type="text"], input[type="number"], input[type="date"], input[type="time"], input[type="password"], input[type="search"], input[type="email"], select, textarea { background: var(--field); border: 1.5px solid var(--field-line); border-radius: 14px; }
+input:focus, select:focus, textarea:focus { border-color: var(--accent) !important; box-shadow: 0 0 0 4px rgba(200,35,44,.14) !important; outline: none; }
+input[type="checkbox"], input[type="radio"], input[type="range"] { accent-color: var(--accent); }
+
+/* tables and tags */
+table th { color: var(--muted); }
+.tag-info { background: #DBEAFE; color: #1E40AF; }
+.flash { border-radius: 16px; }
+
+/* Home: the day-start pill and the Prepaid / COD tabs follow the brand colour */
+.time-btn.on, .pc-seg a.on { background: var(--accent) !important; border-color: var(--accent) !important; color: #fff !important; }
+.pc-box { border: 0 !important; border-radius: 22px !important; box-shadow: 0 2px 4px rgba(60,40,10,.05), 0 12px 28px rgba(60,40,10,.07); }
+
+/* Overall Report */
+.rp-fill { background: linear-gradient(90deg, #C8232C, #F7A93B); }
+.rp-table tr.me td { background: var(--accent-soft); }
+.rp-hero.good .ic { background: #DCFCE7; }

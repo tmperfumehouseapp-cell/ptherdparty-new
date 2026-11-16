@@ -1,13 +1,17 @@
-# Deploy: Overall Report (admin panel)
+# Deploy: Overall Report + red theme (Order Desk admin)
 
-Files: `overall_report.php` (site root), `report_lib.php` and `header.php` (both go in `includes/`).
-The ready-made `overall_report_deploy.zip` already has this layout.
+`overall_report_deploy.zip` already has the right folders:
+
+| File in the zip | Goes to |
+|---|---|
+| `overall_report.php` | site root (next to `index.php`) |
+| `includes/report_lib.php`, `includes/header.php` | `includes/` |
+| `assets/theme-red.css` | `assets/` |
 
 1. Hostinger > Websites > admin site > File Manager, open the folder that contains `index.php`.
-2. Open `includes/`, download `header.php` as a backup.
-3. Back in the main folder, upload `overall_report_deploy.zip` and Extract it there. Overwrite when asked
-   (only `includes/header.php` is replaced).
-4. Log in as a manager: "Overall Report" appears below Home.
-5. Rollback: upload the backed-up `header.php` to `includes/`.
+2. Download `includes/header.php` as a backup.
+3. Upload the zip to that folder and Extract it. Overwrite when asked (only `includes/header.php` is replaced).
+4. Log in as a manager: the new red look is on every page, and "Overall Report" is under Home.
 
-The page only reads data. No database changes are needed.
+Rollback: restore the backed-up `header.php`, or just delete `assets/theme-red.css` to drop the red look.
+No database changes. The Overall Report only reads data.
