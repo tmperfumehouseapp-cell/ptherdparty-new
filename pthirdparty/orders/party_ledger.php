@@ -4,6 +4,7 @@ require __DIR__ . '/includes/ops_lib.php';
 require_once __DIR__ . '/includes/proof_lib.php';
 require_once __DIR__ . '/includes/simple_lib.php';
 require_once __DIR__ . '/includes/dealer_lib.php';
+require_once __DIR__ . '/includes/ledger_edit_lib.php';
 $user = require_admin();
 $pdo = db();
 
@@ -56,6 +57,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw $ex;
             }
             flash('ok', 'Payment of ' . inr($amt) . ' saved.');
+        } elseif ($action === 'opening_edit') {
+            // fix the opening entry of this dealer: who owes, amount, date (amount 0 removes it)
+            $amt = round(abs(num($_POST['amount'] ?? 0)), 2);
+            if (($_POST['who'] ?? 'i_owe') === 'owes_me') {
+                $amt = -$amt;
+            }
+            $d = valid_date((string)($_POST['entry_date'] ?? ''));
+            if ($d === null) {
+                throw new RuntimeException('Enter the opening date.');
+            }
+            ledger_opening_save($pdo, $user, $partyId, (int)($_POST['entry_id'] ?? 0), $amt, $d);
+            flash('ok', 'Opening entry saved. The balance is recalculated.');
         }
     } catch (PDOException $ex) {
         if ($ex->getCode() === '23000') {
@@ -142,6 +155,22 @@ require __DIR__ . '/includes/header.php';
               <?php if (!empty($r['proof_file'])): ?><a class="mini" href="proof.php?id=<?= (int)$r['proof_id'] ?>" target="_blank" rel="noopener">View screenshot</a><?php endif; ?>
               <?php if ($r['account']): ?><span class="mini"> <?= in_array($r['entry_type'], ['collected', 'returned'], true) ? 'on' : 'from' ?> <?= e($r['account']) ?></span><?php endif; ?>
               <?php if ($r['note']): ?><div class="mini"><?= e($r['note']) ?></div><?php endif; ?>
+              <?php if ($r['entry_type'] === 'opening'): ?>
+              <details style="margin-top:6px"><summary class="btn btn-ghost btn-sm" style="display:inline-flex;cursor:pointer">Edit opening</summary>
+                <form method="post" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-top:10px">
+                  <?= csrf_field() ?>
+                  <input type="hidden" name="action" value="opening_edit">
+                  <input type="hidden" name="id" value="<?= (int)$partyId ?>">
+                  <input type="hidden" name="entry_id" value="<?= (int)$r['id'] ?>">
+                  <div class="field" style="margin:0;flex:1 1 150px"><label>Who owes?</label>
+                    <select name="who"><option value="i_owe"<?= (float)$r['amount'] >= 0 ? ' selected' : '' ?>>I owe the dealer</option><option value="owes_me"<?= (float)$r['amount'] < 0 ? ' selected' : '' ?>>The dealer owes me</option></select></div>
+                  <div class="field" style="margin:0;flex:1 1 130px"><label>Amount (₹)</label><input name="amount" type="text" inputmode="decimal" value="<?= e((string)abs((float)$r['amount'])) ?>"></div>
+                  <div class="field" style="margin:0;flex:1 1 160px"><label>Opening date</label><input name="entry_date" type="date" value="<?= e($r['entry_date']) ?>" <?= $dateInput ?>></div>
+                  <button class="btn btn-accent btn-sm" type="submit">Save</button>
+                </form>
+                <div class="hint">Set the amount to 0 to remove the opening entry. Every change is kept in the change history.</div>
+              </details>
+              <?php endif; ?>
               <?php if ($r['entry_type'] === 'payment' && $r['ledger_id'] === null): ?>
               <div class="acts" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">
                 <a class="btn btn-ghost btn-sm linkbtn" href="ledger_entry.php?id=<?= (int)$r['id'] ?>&amp;back=<?= e(rawurlencode('party_ledger.php?id=' . $partyId)) ?>">Edit Payment</a>
