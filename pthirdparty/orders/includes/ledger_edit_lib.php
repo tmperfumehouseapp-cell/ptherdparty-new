@@ -179,3 +179,37 @@ function ledger_payment_delete(PDO $pdo, array $user, int $id): string
     }
     return $warn;
 }
+
+/**
+ * Adds, edits or (amount 0) removes one opening entry of a dealer. $signed: positive = you owe the dealer, negative = the dealer owes you.
+ * $entryId 0 = add a new one. Every change is kept in ledger_audit, and balances are re-added from the rows, so they follow at once.
+ */
+function ledger_opening_save(PDO $pdo, array $user, int $partyId, int $entryId, float $signed, string $date): void
+{
+    ledger_audit_ensure($pdo);
+    in_tx($pdo, function () use ($pdo, $user, $partyId, $entryId, $signed, $date) {
+        $old = null;
+        if ($entryId > 0) {
+            $q = $pdo->prepare("SELECT id, entry_date, amount FROM party_ledger WHERE id = ? AND party_id = ? AND entry_type = 'opening' FOR UPDATE");
+            $q->execute([$entryId, $partyId]);
+            $old = $q->fetch() ?: null;
+            if (!$old) {
+                throw new RuntimeException('That opening entry was not found. Refresh the page.');
+            }
+        }
+        if ($old === null) {
+            if (abs($signed) < 0.005) {
+                throw new RuntimeException('Enter the opening amount.');
+            }
+            $pdo->prepare("INSERT INTO party_ledger (party_id, entry_date, entry_type, amount, note, created_by) VALUES (?, ?, 'opening', ?, 'Opening balance', ?)")
+                ->execute([$partyId, $date, $signed, (int)$user['id']]);
+            ledger_audit_add($pdo, $partyId, (int)$pdo->lastInsertId(), 'add', null, ['entry_date' => $date, 'amount' => $signed], (int)$user['id']);
+        } elseif (abs($signed) < 0.005) { // amount 0 removes the opening entry
+            $pdo->prepare('DELETE FROM party_ledger WHERE id = ?')->execute([(int)$old['id']]);
+            ledger_audit_add($pdo, $partyId, (int)$old['id'], 'delete', ['entry_date' => $old['entry_date'], 'amount' => (float)$old['amount']], null, (int)$user['id']);
+        } else {
+            $pdo->prepare('UPDATE party_ledger SET entry_date = ?, amount = ? WHERE id = ?')->execute([$date, $signed, (int)$old['id']]);
+            ledger_audit_add($pdo, $partyId, (int)$old['id'], 'edit', ['entry_date' => $old['entry_date'], 'amount' => (float)$old['amount']], ['entry_date' => $date, 'amount' => $signed], (int)$user['id']);
+        }
+    });
+}

@@ -82,32 +82,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') ==
         if ($date === null) {
             throw new RuntimeException('Enter the opening date.');
         }
-        ledger_audit_ensure($pdo);
-        in_tx($pdo, function () use ($pdo, $user, $dealer, $entryId, $amt, $date) {
-            $old = null;
-            if ($entryId > 0) {
-                $q = $pdo->prepare("SELECT id, entry_date, amount FROM party_ledger WHERE id = ? AND party_id = ? AND entry_type = 'opening' FOR UPDATE");
-                $q->execute([$entryId, $dealer]);
-                $old = $q->fetch() ?: null;
-                if (!$old) {
-                    throw new RuntimeException('That opening entry was not found. Refresh the page.');
-                }
-            }
-            if ($old === null) {
-                if (abs($amt) < 0.005) {
-                    throw new RuntimeException('Enter the opening amount.');
-                }
-                $pdo->prepare("INSERT INTO party_ledger (party_id, entry_date, entry_type, amount, note, created_by) VALUES (?, ?, 'opening', ?, 'Opening balance', ?)")
-                    ->execute([$dealer, $date, $amt, (int)$user['id']]);
-                ledger_audit_add($pdo, $dealer, (int)$pdo->lastInsertId(), 'add', null, ['entry_date' => $date, 'amount' => $amt], (int)$user['id']);
-            } elseif (abs($amt) < 0.005) { // amount 0 removes the opening entry
-                $pdo->prepare('DELETE FROM party_ledger WHERE id = ?')->execute([(int)$old['id']]);
-                ledger_audit_add($pdo, $dealer, (int)$old['id'], 'delete', ['entry_date' => $old['entry_date'], 'amount' => (float)$old['amount']], null, (int)$user['id']);
-            } else {
-                $pdo->prepare('UPDATE party_ledger SET entry_date = ?, amount = ? WHERE id = ?')->execute([$date, $amt, (int)$old['id']]);
-                ledger_audit_add($pdo, $dealer, (int)$old['id'], 'edit', ['entry_date' => $old['entry_date'], 'amount' => (float)$old['amount']], ['entry_date' => $date, 'amount' => $amt], (int)$user['id']);
-            }
-        });
+        ledger_opening_save($pdo, $user, $dealer, $entryId, $amt, $date);
         flash('ok', 'Opening entry saved. The dealer balance is recalculated.');
     } catch (RuntimeException $ex) {
         flash('error', $ex->getMessage());
