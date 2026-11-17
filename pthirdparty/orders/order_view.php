@@ -7,6 +7,7 @@ require_once __DIR__ . '/includes/proof_lib.php';
 require_once __DIR__ . '/includes/dealer_send_lib.php';
 require_once __DIR__ . '/includes/shiprocket_lib.php';
 require_once __DIR__ . '/includes/order_account_lib.php';
+require_once __DIR__ . '/includes/order_dealer_lib.php';
 $user = require_login();
 $pdo = db();
 $isAdmin = $user['role'] === 'admin';
@@ -214,8 +215,11 @@ $payRows = $isAdmin ? order_pay_rows($pdo, $id) : [];
 $payAccounts = $isAdmin ? order_pay_accounts($pdo) : [];
 $accounts = $pdo->query('SELECT id, name FROM accounts WHERE is_active = 1 ORDER BY name')->fetchAll();
 $accOpts = '';
+$codOpts = ''; // COD money: your own QR is pre-selected (any other account can still be chosen)
+$codDefault = default_cod_account_id($pdo);
 foreach ($accounts as $a) {
     $accOpts .= '<option value="' . (int)$a['id'] . '">' . e($a['name']) . '</option>';
+    $codOpts .= '<option value="' . (int)$a['id'] . '"' . ((int)$a['id'] === $codDefault ? ' selected' : '') . '>' . e($a['name']) . '</option>';
 }
 
 $hasTracking = !empty($order['tracking_id']) || !empty($order['tracking_link']);
@@ -431,7 +435,7 @@ require __DIR__ . '/includes/header.php';
         <?= csrf_field() ?><input type="hidden" name="id" value="<?= (int)$id ?>">
         <div class="twocol">
           <div><label for="cod_amount">Amount received (₹)</label><input id="cod_amount" name="amount" type="text" inputmode="decimal" value="<?= e((string)$codPending) ?>"></div>
-          <div><label for="cod_acc">Into account</label><select id="cod_acc" name="account_id"><?= $accOpts ?></select></div>
+          <div><label for="cod_acc">Into account</label><select id="cod_acc" name="account_id"><?= $codOpts ?></select></div>
           <div><label for="cod_date">Date</label><input id="cod_date" name="received_date" type="date" value="<?= e(biz_today()) ?>" <?= $dateInput ?>></div>
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">
