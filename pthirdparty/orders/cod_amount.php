@@ -49,6 +49,8 @@ foreach ($days as $d) {
 }
 $first = $pdo->query("SELECT MIN(d) FROM (SELECT MIN(received_date) AS d FROM cod_receipts UNION ALL SELECT MIN(entry_date) FROM account_ledger WHERE entry_type = 'cod') x")->fetchColumn() ?: $today;
 
+require_once __DIR__ . '/includes/order_dealer_lib.php';
+$codDefault = default_cod_account_id($pdo); // COD money normally comes into your own QR
 $accounts = $pdo->query('SELECT a.id, a.name, p.name AS owner FROM accounts a LEFT JOIN parties p ON p.id = a.party_id WHERE a.is_active = 1 ORDER BY (a.party_id IS NOT NULL), a.name')->fetchAll();
 // money entered here by hand (not tied to one order): the only entries that can be deleted from this page
 $manual = $pdo->query(
@@ -123,7 +125,7 @@ require __DIR__ . '/includes/header.php';
     <div class="field"><label for="amount">Amount received (₹)</label><input id="amount" name="amount" type="text" inputmode="decimal" required></div>
     <div class="field"><label for="account_id">Came into</label>
       <select id="account_id" name="account_id">
-        <?php foreach ($accounts as $a): ?><option value="<?= (int)$a['id'] ?>"><?= e($a['name']) ?><?= $a['owner'] ? ' (' . e($a['owner']) . ')' : '' ?></option><?php endforeach; ?>
+        <?php foreach ($accounts as $a): ?><option value="<?= (int)$a['id'] ?>"<?= (int)$a['id'] === $codDefault ? ' selected' : '' ?>><?= e($a['name']) ?><?= $a['owner'] ? ' (' . e($a['owner']) . ')' : '' ?></option><?php endforeach; ?>
       </select></div>
     <div class="field"><label for="note">Note (optional)</label><input id="note" name="note" type="text" placeholder="Shiprocket remittance, UTR ..."></div>
     <button class="btn btn-accent btn-block" type="submit">Save COD received</button>

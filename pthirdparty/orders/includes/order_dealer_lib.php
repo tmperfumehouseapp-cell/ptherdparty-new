@@ -55,3 +55,19 @@ function order_resolve_account(PDO $pdo, array $user, array $lines, int $posted)
     }
     return $qr['id'];
 }
+
+/**
+ * The account COD money normally comes into: YOUR OWN QR (an account that is not a dealer's; Shiprocket pays COD money to you,
+ * and what you owe the dealers is entered separately in Billing). Prefers the account named "My qr", otherwise the first own account.
+ * Only a default for the forms: any other account can still be chosen. Returns 0 when there is no own account.
+ */
+function default_cod_account_id(PDO $pdo): int
+{
+    $rows = $pdo->query('SELECT id, name FROM accounts WHERE is_active = 1 AND party_id IS NULL ORDER BY id')->fetchAll();
+    foreach ($rows as $r) {
+        if (strtolower(preg_replace('/\s+/', '', (string)$r['name'])) === 'myqr') {
+            return (int)$r['id'];
+        }
+    }
+    return $rows ? (int)$rows[0]['id'] : 0;
+}

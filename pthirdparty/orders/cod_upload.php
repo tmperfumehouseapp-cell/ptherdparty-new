@@ -5,7 +5,9 @@ require __DIR__ . '/includes/ops_lib.php';
 $user = require_admin();
 $pdo = db();
 
+require_once __DIR__ . '/includes/order_dealer_lib.php';
 $accounts = $pdo->query('SELECT id, name FROM accounts WHERE is_active = 1 ORDER BY name')->fetchAll();
+$codDefault = default_cod_account_id($pdo); // COD money normally comes into your own QR
 $results = null;
 $summary = null;
 
@@ -136,7 +138,7 @@ require __DIR__ . '/includes/header.php';
       <?= csrf_field() ?>
       <div class="field"><label for="account_id">Money came into</label>
         <select id="account_id" name="account_id" required>
-          <?php foreach ($accounts as $a): ?><option value="<?= (int)$a['id'] ?>"><?= e($a['name']) ?></option><?php endforeach; ?>
+          <?php foreach ($accounts as $a): ?><option value="<?= (int)$a['id'] ?>"<?= (int)$a['id'] === $codDefault ? ' selected' : '' ?>><?= e($a['name']) ?></option><?php endforeach; ?>
         </select></div>
       <div class="field"><label for="sheet">Excel (.xlsx) or CSV file</label><input id="sheet" name="sheet" type="file" accept=".xlsx,.csv" required style="width:100%"></div>
       <button class="btn btn-accent btn-block" type="submit">Upload and save</button>
