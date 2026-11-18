@@ -1,9 +1,7 @@
 <?php
 require __DIR__ . '/includes/bootstrap.php';
-require_once __DIR__ . '/includes/addon_lib.php';
 $user = require_admin();
 $pdo = db();
-$headIds = sales_head_ids($pdo);
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
@@ -42,15 +40,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->prepare('UPDATE users SET is_active = 1 - is_active WHERE id = ?')->execute([$id]);
             flash('ok', 'Login updated.');
         }
-    } elseif ($action === 'head') {
-        $id = (int)($_POST['id'] ?? 0);
-        $q = $pdo->prepare("SELECT role FROM users WHERE id = ?");
-        $q->execute([$id]);
-        if ($q->fetchColumn() !== 'salesperson') {
-            flash('error', 'Only a salesperson login can be made sales head.');
-        } else {
-            flash('ok', sales_head_toggle($pdo, $id) ? 'Marked as sales head. They can see all orders and add on.' : 'Sales head removed.');
-        }
     } elseif ($action === 'reset') {
         $id = (int)($_POST['id'] ?? 0);
         $pass = (string)($_POST['password'] ?? '');
@@ -81,10 +70,7 @@ require __DIR__ . '/includes/header.php';
           <tr>
             <td><?= e($r['name']) ?> <?php if (!$r['is_active']): ?><span class="tag tag-off">Off</span><?php endif; ?></td>
             <td><?= e($r['username']) ?></td>
-            <td><span class="tag"><?= $r['role'] === 'admin' ? 'Manager' : (in_array((int)$r['id'], $headIds, true) ? 'Sales head' : 'Salesperson') ?></span>
-              <?php if ($r['role'] !== 'admin'): ?>
-              <form class="inline" method="post" style="display:inline"><?= csrf_field() ?><input type="hidden" name="action" value="head"><input type="hidden" name="id" value="<?= (int)$r['id'] ?>"><button class="btn btn-ghost btn-sm" type="submit"><?= in_array((int)$r['id'], $headIds, true) ? 'Remove sales head' : 'Make sales head' ?></button></form>
-              <?php endif; ?></td>
+            <td><span class="tag"><?= $r['role'] === 'admin' ? 'Manager' : 'Salesperson' ?></span></td>
             <td>
               <form class="inline" method="post" autocomplete="off" style="display:flex;gap:6px">
                 <?= csrf_field() ?>

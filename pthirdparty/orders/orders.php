@@ -76,8 +76,7 @@ if ($isAdmin && $mode === 'buying') {
 
 $where = [];
 $params = [];
-require_once __DIR__ . '/includes/addon_lib.php';
-if (!$isAdmin && !is_sales_head($pdo, $user)) { // a sales head sees every order (to add on)
+if (!$isAdmin) {
     $where[] = 'o.salesperson_id = ?';
     $params[] = (int)$user['id'];
 } elseif ($sales > 0) {
