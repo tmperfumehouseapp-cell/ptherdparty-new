@@ -328,11 +328,16 @@ function sr_order_parts(PDO $pdo, array $order, int $partyId): array
     if (count($dealers) <= 1) {
         require_once __DIR__ . '/addon_lib.php';
         foreach (addon_rows($pdo, (int)$order['id']) as $ad) {
-            $items[] = [
-                'name' => mb_substr('ADD-ON ' . $ad['name'] . ($ad['size'] !== '' ? ' ' . $ad['size'] : ''), 0, 120), 'sku' => 'ADDON' . (int)$ad['id'],
-                'units' => (int)$ad['qty'], 'selling_price' => round((float)$ad['price'], 2),
-            ];
-            $portion += addon_line_total($ad);
+            // the add-on has one total for all its products: share it equally per unit
+            $units = max(1, array_sum(array_map(static fn($it) => (int)$it['qty'], $ad['items'])));
+            foreach ($ad['items'] as $k => $it) {
+                $items[] = [
+                    'name' => mb_substr('ADD-ON ' . $it['name'] . (($it['size'] ?? '') !== '' ? ' ' . $it['size'] . ' ml' : ''), 0, 120),
+                    'sku' => 'ADDON' . (int)$ad['id'] . '-' . ($k + 1),
+                    'units' => (int)$it['qty'], 'selling_price' => round((float)$ad['total'] / $units, 2),
+                ];
+            }
+            $portion += (float)$ad['total'];
         }
     }
     $portion = round($portion, 2);

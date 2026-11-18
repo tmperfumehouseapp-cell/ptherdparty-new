@@ -16,9 +16,9 @@ if (isset($_GET['r'])) {
         exit('Image not found.');
     }
 } elseif (isset($_GET['a'])) {
-    // the payment screenshot of an add-on (order_addons.proof_file); same access rule as the order's own screenshot
+    // the payment screenshot of an add-on (order_addon_sets.proof_file); same access rule as the order's own screenshot
     try {
-        $st = $pdo->prepare("SELECT id, 'order' AS kind, order_id AS ref_id, proof_file AS file FROM order_addons WHERE id = ?");
+        $st = $pdo->prepare("SELECT id, 'order' AS kind, order_id AS ref_id, proof_file AS file FROM order_addon_sets WHERE id = ?");
         $st->execute([(int)$_GET['a']]);
     } catch (Throwable $e) {
         http_response_code(404);
