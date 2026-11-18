@@ -1,11 +1,9 @@
 <?php
 // Add-ons: products a customer agreed to add AFTER the order was created (for example after a confirmation call).
-// The order is not cancelled or created again. Same shape as the HRMS "Add-on" form:
-//   products (name, size in ml, qty) + total add-on price = prepaid amount (paid in advance) + COD amount (collect on delivery).
-// The add-on total is added to the order total:
-//   - prepaid part: booked in the order's payment account (needs a payment screenshot);
-//                   on a COD order it counts as extra advance, so only the COD part is collected by the courier.
-//   - COD part    : COD orders only. It stays in the COD amount, so the courier collects it.
+// The order is not cancelled or created again. The add-on amount is added to the order total:
+//   - paid add-on  : the money is booked in the order's payment account (needs a payment screenshot);
+//                    on a COD order it counts as extra advance, so the COD amount to collect does not change.
+//   - unpaid add-on: COD orders only. It is added to the COD amount, so the courier collects it.
 // Who can add: the manager (admin) and the "sales head" logins (marked on the Team page).
 
 require_once __DIR__ . '/ops_lib.php';
@@ -18,13 +16,15 @@ function addon_migrate(PDO $pdo): void
         return;
     }
     $pdo->exec(
-        "CREATE TABLE IF NOT EXISTS order_addon_sets (
+        "CREATE TABLE IF NOT EXISTS order_addons (
             id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
             order_id INT UNSIGNED NOT NULL,
-            products TEXT NOT NULL,
-            total DECIMAL(12,2) NOT NULL,
-            prepaid DECIMAL(12,2) NOT NULL DEFAULT 0,
-            cod DECIMAL(12,2) NOT NULL DEFAULT 0,
+            name VARCHAR(160) NOT NULL,
+            size VARCHAR(40) NOT NULL DEFAULT '',
+            qty INT NOT NULL DEFAULT 1,
+            price DECIMAL(12,2) NOT NULL,
+            details VARCHAR(300) NOT NULL DEFAULT '',
+            paid TINYINT(1) NOT NULL DEFAULT 0,
             ledger_id INT UNSIGNED NULL,
             proof_file VARCHAR(80) NULL,
             created_by INT UNSIGNED NOT NULL,
@@ -69,79 +69,51 @@ function can_addon(PDO $pdo, array $user): bool
     return $user['role'] === 'admin' || is_sales_head($pdo, $user);
 }
 
-/** Add-ons of an order; each row gets 'items' = [['name'=>, 'size'=>, 'qty'=>], ...]. */
 function addon_rows(PDO $pdo, int $orderId): array
 {
     try {
         addon_migrate($pdo);
-        $st = $pdo->prepare('SELECT a.*, u.name AS by_name FROM order_addon_sets a LEFT JOIN users u ON u.id = a.created_by WHERE a.order_id = ? ORDER BY a.id');
+        $st = $pdo->prepare('SELECT a.*, u.name AS by_name FROM order_addons a LEFT JOIN users u ON u.id = a.created_by WHERE a.order_id = ? ORDER BY a.id');
         $st->execute([$orderId]);
-        $rows = $st->fetchAll();
+        return $st->fetchAll();
     } catch (Throwable $e) {
         return [];
     }
-    foreach ($rows as &$r) {
-        $items = json_decode((string)$r['products'], true);
-        $r['items'] = is_array($items) ? $items : [];
-    }
-    unset($r);
-    return $rows;
+}
+
+function addon_line_total(array $a): float
+{
+    return round((float)$a['price'] * (int)$a['qty'], 2);
 }
 
 function addon_total(array $rows): float
 {
-    return round(array_sum(array_map(static fn($a) => (float)$a['total'], $rows)), 2);
+    return round(array_sum(array_map('addon_line_total', $rows)), 2);
 }
 
-/** "Name 50 ml x2, Name 20 ml x1" for lists and messages. */
-function addon_items_text(array $a): string
-{
-    $parts = [];
-    foreach ($a['items'] as $it) {
-        $parts[] = $it['name'] . (($it['size'] ?? '') !== '' ? ' ' . $it['size'] . ' ml' : '') . ' x' . (int)$it['qty'];
-    }
-    return implode(', ', $parts);
-}
-
-/** Adds one add-on to an order. Returns the add-on total. Throws RuntimeException with a message safe to show. */
+/** Adds one add-on to an order. Returns the add-on amount. Throws RuntimeException with a message safe to show. */
 function addon_add(PDO $pdo, array $user, int $orderId, array $post, ?array $file): float
 {
     if (!can_addon($pdo, $user)) {
         throw new RuntimeException('Only the manager or the sales head can add an add-on.');
     }
     addon_migrate($pdo);
-
-    // products: name + size (ml) + qty, empty rows are skipped
-    $items = [];
-    $names = (array)($post['addon_name'] ?? []);
-    $sizes = (array)($post['addon_size'] ?? []);
-    $qtys = (array)($post['addon_qty'] ?? []);
-    foreach ($names as $i => $n) {
-        $n = mb_substr(trim((string)$n), 0, 160);
-        if ($n === '') {
-            continue;
-        }
-        $q = (int)($qtys[$i] ?? 1);
-        if ($q < 1 || $q > 999) {
-            throw new RuntimeException('Enter the quantity for "' . $n . '".');
-        }
-        $items[] = ['name' => $n, 'size' => mb_substr(trim((string)($sizes[$i] ?? '')), 0, 20), 'qty' => $q];
+    $name = trim((string)($post['addon_name'] ?? ''));
+    $size = mb_substr(trim((string)($post['addon_size'] ?? '')), 0, 40);
+    $details = mb_substr(trim((string)($post['addon_details'] ?? '')), 0, 300);
+    $qty = (int)($post['addon_qty'] ?? 1);
+    $price = round(num($post['addon_price'] ?? 0), 2);
+    $paid = (($post['addon_paid'] ?? '') === 'paid');
+    if ($name === '' || mb_strlen($name) > 160) {
+        throw new RuntimeException('Write the perfume name.');
     }
-    if (!$items) {
-        throw new RuntimeException('Write at least one product name.');
+    if ($qty < 1 || $qty > 999) {
+        throw new RuntimeException('Enter the quantity.');
     }
-    $total = round(num($post['addon_total'] ?? 0), 2);
-    $prepaid = round(num($post['addon_prepaid'] ?? 0), 2);
-    $cod = round(num($post['addon_cod'] ?? 0), 2);
-    if ($total <= 0) {
-        throw new RuntimeException('Enter the total add-on price.');
+    if ($price <= 0) {
+        throw new RuntimeException('Enter the price (more than 0).');
     }
-    if ($prepaid < 0 || $cod < 0) {
-        throw new RuntimeException('Amounts cannot be negative.');
-    }
-    if (abs($prepaid + $cod - $total) > 0.005) {
-        throw new RuntimeException('Prepaid amount (' . inr($prepaid) . ') + COD amount (' . inr($cod) . ') must equal the total add-on price (' . inr($total) . ').');
-    }
+    $amount = round($price * $qty, 2);
 
     $o = $pdo->prepare('SELECT id, status, payment_mode, account_id FROM orders WHERE id = ?');
     $o->execute([$orderId]);
@@ -155,38 +127,33 @@ function addon_add(PDO $pdo, array $user, int $orderId, array $post, ?array $fil
     if (function_exists('sr_order_locked') && sr_order_locked($pdo, $orderId)) {
         throw new RuntimeException('This order is booked in Shiprocket. Press Cancel shipment first, then add the add-on, so the courier gets the right amount and products.');
     }
-    if ($order['payment_mode'] !== 'cod' && $cod > 0) {
-        throw new RuntimeException('This order is prepaid, so there is no COD amount. Put the full amount as prepaid.');
+    if ($order['payment_mode'] !== 'cod' && !$paid) {
+        throw new RuntimeException('This order is prepaid, so the add-on must be paid now. Choose "Already paid" and attach the screenshot.');
     }
     $proof = null;
-    if ($prepaid > 0) {
+    if ($paid) {
         $proof = save_proof_upload($file); // throws "Attach the payment screenshot." when missing
     }
-    $isCod = $order['payment_mode'] === 'cod';
     try {
-        in_tx($pdo, function () use ($pdo, $user, $orderId, $order, $items, $total, $prepaid, $cod, $proof, $isCod) {
+        in_tx($pdo, function () use ($pdo, $user, $orderId, $order, $name, $size, $details, $qty, $price, $amount, $paid, $proof) {
             $lk = $pdo->prepare('SELECT id FROM orders WHERE id = ? FOR UPDATE');
             $lk->execute([$orderId]);
             $ledgerId = null;
-            if ($prepaid > 0) {
+            if ($paid) {
                 if (empty($order['account_id'])) {
                     throw new RuntimeException('This order has no payment account. Choose it first in the order, then add the add-on.');
                 }
                 require_once __DIR__ . '/vendor_lib.php';
-                $ledgerId = post_account_entry($pdo, (int)$user['id'], (int)$order['account_id'], biz_today(), 'in', $prepaid, 'prepaid', $orderId,
+                $ledgerId = post_account_entry($pdo, (int)$user['id'], (int)$order['account_id'], biz_today(), 'in', $amount, 'prepaid', $orderId,
                     'Add-on for order ' . order_no($orderId));
             }
             $pdo->prepare(
-                'INSERT INTO order_addon_sets (order_id, products, total, prepaid, cod, ledger_id, proof_file, created_by)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-            )->execute([$orderId, json_encode($items, JSON_UNESCAPED_UNICODE), $total, $prepaid, $cod, $ledgerId, $proof, (int)$user['id']]);
-            if ($isCod) {
-                $pdo->prepare('UPDATE orders SET total = total + ?, subtotal = subtotal + ?, advance_amount = advance_amount + ? WHERE id = ?')
-                    ->execute([$total, $total, $prepaid, $orderId]);
-            } else {
-                $pdo->prepare('UPDATE orders SET total = total + ?, subtotal = subtotal + ? WHERE id = ?')->execute([$total, $total, $orderId]);
-            }
-            if ($prepaid > 0) {
+                'INSERT INTO order_addons (order_id, name, size, qty, price, details, paid, ledger_id, proof_file, created_by)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+            )->execute([$orderId, $name, $size, $qty, $price, $details, $paid ? 1 : 0, $ledgerId, $proof, (int)$user['id']]);
+            $pdo->prepare('UPDATE orders SET total = total + ?, subtotal = subtotal + ?' . (($paid && $order['payment_mode'] === 'cod') ? ', advance_amount = advance_amount + ?' : '') . ' WHERE id = ?')
+                ->execute(($paid && $order['payment_mode'] === 'cod') ? [$amount, $amount, $amount, $orderId] : [$amount, $amount, $orderId]);
+            if ($paid) {
                 sync_order_holds($pdo, (int)$user['id'], $orderId);
             }
         });
@@ -194,7 +161,7 @@ function addon_add(PDO $pdo, array $user, int $orderId, array $post, ?array $fil
         proof_remove_file($proof);
         throw $e;
     }
-    return $total;
+    return $amount;
 }
 
 /** Removes an add-on again (manager only): the order total, the COD amount and the money entry go back. */
@@ -204,7 +171,7 @@ function addon_remove(PDO $pdo, array $user, int $orderId, int $addonId): void
         throw new RuntimeException('Only the manager can remove an add-on.');
     }
     addon_migrate($pdo);
-    $st = $pdo->prepare('SELECT * FROM order_addon_sets WHERE id = ? AND order_id = ?');
+    $st = $pdo->prepare('SELECT * FROM order_addons WHERE id = ? AND order_id = ?');
     $st->execute([$addonId, $orderId]);
     $a = $st->fetch();
     if (!$a) {
@@ -219,29 +186,22 @@ function addon_remove(PDO $pdo, array $user, int $orderId, int $addonId): void
     if (function_exists('sr_order_locked') && sr_order_locked($pdo, $orderId)) {
         throw new RuntimeException('This order is booked in Shiprocket. Press Cancel shipment first.');
     }
-    $total = (float)$a['total'];
-    $prepaid = (float)$a['prepaid'];
-    $isCod = $order['payment_mode'] === 'cod';
-    if ($isCod) {
-        // COD still to collect after removal = (total - add-on) - (advance - its prepaid part) - COD money already received
-        $newDue = round((float)$order['total'] - $total - ((float)$order['advance_amount'] - $prepaid) - order_cod_received($pdo, $orderId), 2);
+    $amount = addon_line_total($a);
+    if ($order['payment_mode'] === 'cod') {
+        $newDue = round((float)$order['total'] - $amount - (float)$order['advance_amount'] + ($a['paid'] ? $amount : 0) - order_cod_received($pdo, $orderId), 2);
         if ($newDue < -0.005) {
             throw new RuntimeException('COD money was already received on this order, so the add-on cannot be removed.');
         }
     }
-    in_tx($pdo, function () use ($pdo, $user, $orderId, $a, $total, $prepaid, $isCod) {
-        if ($prepaid > 0 && $a['ledger_id']) {
+    in_tx($pdo, function () use ($pdo, $user, $orderId, $a, $order, $amount) {
+        if ($a['paid'] && $a['ledger_id']) {
             $pdo->prepare('DELETE FROM party_ledger WHERE ledger_id = ?')->execute([(int)$a['ledger_id']]);
             $pdo->prepare('DELETE FROM account_ledger WHERE id = ?')->execute([(int)$a['ledger_id']]);
         }
-        $pdo->prepare('DELETE FROM order_addon_sets WHERE id = ?')->execute([(int)$a['id']]);
-        if ($isCod) {
-            $pdo->prepare('UPDATE orders SET total = total - ?, subtotal = subtotal - ?, advance_amount = advance_amount - ? WHERE id = ?')
-                ->execute([$total, $total, $prepaid, $orderId]);
-        } else {
-            $pdo->prepare('UPDATE orders SET total = total - ?, subtotal = subtotal - ? WHERE id = ?')->execute([$total, $total, $orderId]);
-        }
-        if ($prepaid > 0) {
+        $pdo->prepare('DELETE FROM order_addons WHERE id = ?')->execute([(int)$a['id']]);
+        $pdo->prepare('UPDATE orders SET total = total - ?, subtotal = subtotal - ?' . (($a['paid'] && $order['payment_mode'] === 'cod') ? ', advance_amount = advance_amount - ?' : '') . ' WHERE id = ?')
+            ->execute(($a['paid'] && $order['payment_mode'] === 'cod') ? [$amount, $amount, $amount, $orderId] : [$amount, $amount, $orderId]);
+        if ($a['paid']) {
             require_once __DIR__ . '/vendor_lib.php';
             sync_order_holds($pdo, (int)$user['id'], $orderId);
         }
@@ -256,7 +216,7 @@ function addon_delete_for(PDO $pdo, int $orderId): void
         proof_remove_file($a['proof_file']);
     }
     try {
-        $pdo->prepare('DELETE FROM order_addon_sets WHERE order_id = ?')->execute([$orderId]);
+        $pdo->prepare('DELETE FROM order_addons WHERE order_id = ?')->execute([$orderId]);
     } catch (Throwable $e) {
         // table not created yet: nothing to delete
     }

@@ -332,14 +332,16 @@ require __DIR__ . '/includes/header.php';
       </div>
       <?php if ($addons): ?>
       <div class="table-wrap"><table class="tight" style="min-width:560px">
-        <thead><tr><th>Products added</th><th class="num">Total</th><th class="num">Prepaid</th><th class="num">COD</th><th>Proof</th><th>Added by</th><?php if ($isAdmin): ?><th></th><?php endif; ?></tr></thead>
+        <thead><tr><th>Perfume</th><th>Details</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th><th>Payment</th><th>Proof</th><th>Added by</th><?php if ($isAdmin): ?><th></th><?php endif; ?></tr></thead>
         <tbody>
         <?php foreach ($addons as $ad): ?>
           <tr>
-            <td><span class="tag tag-info">ADD-ON</span> <?= e(addon_items_text($ad)) ?></td>
-            <td class="num"><b><?= e(inr($ad['total'])) ?></b></td>
-            <td class="num"><?= e(inr($ad['prepaid'])) ?></td>
-            <td class="num"><?= (float)$ad['cod'] > 0 ? '<span class="tag tag-warn">' . e(inr($ad['cod'])) . '</span>' : e(inr(0)) ?></td>
+            <td><b><?= e($ad['name']) ?></b> <span class="tag tag-info">ADD-ON</span></td>
+            <td><?= e(trim($ad['size'] . ($ad['details'] !== '' ? ' · ' . $ad['details'] : ''), ' ·')) ?></td>
+            <td class="num"><?= (int)$ad['qty'] ?></td>
+            <td class="num"><?= e(inr($ad['price'])) ?></td>
+            <td class="num"><?= e(inr(addon_line_total($ad))) ?></td>
+            <td><?= $ad['paid'] ? '<span class="tag tag-ok">Paid</span>' : '<span class="tag tag-warn">Collect with COD</span>' ?></td>
             <td><?php if ($ad['proof_file']): ?><a href="proof.php?a=<?= (int)$ad['id'] ?>" target="_blank" rel="noopener"><img src="proof.php?a=<?= (int)$ad['id'] ?>" alt="Payment screenshot" style="width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid var(--field-line)"></a><?php else: ?><span class="mini">-</span><?php endif; ?></td>
             <td><?= e($ad['by_name'] ?? '') ?><div class="mini"><?= e(date('d M, h:i A', strtotime($ad['created_at']))) ?></div></td>
             <?php if ($isAdmin): ?><td><form method="post" onsubmit="return confirm('Remove this add-on? The order total, the COD amount and its money entry go back.');"><?= csrf_field() ?><input type="hidden" name="action" value="addon_remove"><input type="hidden" name="id" value="<?= (int)$id ?>"><input type="hidden" name="addon_id" value="<?= (int)$ad['id'] ?>"><button class="btn btn-ghost btn-sm btn-danger" type="submit">Remove</button></form></td><?php endif; ?>
@@ -351,56 +353,32 @@ require __DIR__ . '/includes/header.php';
       <p class="hint" style="margin:0 0 10px">No add-ons yet.</p>
       <?php endif; ?>
       <?php if ($canAddon && in_array($order['status'], ['created', 'dispatched'], true)): ?>
-      <?php $isCodOrder = $order['payment_mode'] === 'cod'; ?>
       <details style="margin-top:12px"<?= $addons ? '' : ' open' ?>><summary class="btn btn-accent btn-sm" style="display:inline-flex;cursor:pointer">+ Add on</summary>
-        <form method="post" enctype="multipart/form-data" style="margin-top:12px;display:grid;gap:12px;max-width:560px" id="addon-form">
+        <form method="post" enctype="multipart/form-data" style="margin-top:12px;display:grid;gap:12px" id="addon-form">
           <?= csrf_field() ?>
           <input type="hidden" name="action" value="addon_add">
           <input type="hidden" name="id" value="<?= (int)$id ?>">
-          <div class="field" style="margin:0"><label>Original order</label><input type="text" value="<?= e(order_no($order['id'])) ?>" readonly></div>
-          <div class="hint" style="margin:0">The customer already ordered, so do not cancel and create again. Write the products the customer agreed to add.</div>
-          <div><b class="mini" style="text-transform:uppercase;letter-spacing:.04em">Products added</b>
-            <div id="addon-rows" style="display:grid;gap:8px;margin-top:6px"></div>
-            <button class="btn btn-ghost btn-sm" type="button" id="addon-more" style="margin-top:8px">+ Another product</button></div>
-          <div class="field" style="margin:0"><label for="addon_total">Total add-on price (₹) for the products above</label><input id="addon_total" name="addon_total" type="text" inputmode="decimal" required></div>
-          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
-            <div class="field" style="margin:0"><label for="addon_prepaid">Prepaid amount (paid in advance)</label><input id="addon_prepaid" name="addon_prepaid" type="text" inputmode="decimal" value="0"></div>
-            <div class="field" style="margin:0"<?= $isCodOrder ? '' : ' hidden' ?>><label for="addon_cod">COD amount (collect on delivery)</label><input id="addon_cod" name="addon_cod" type="text" inputmode="decimal" value="0"<?= $isCodOrder ? '' : ' readonly' ?>></div>
+          <div class="hint" style="margin:0">The customer already ordered, so do not cancel and create again. Write what the customer agreed to add. The amount is added to this order<?= $order['payment_mode'] === 'cod' ? ' and to the COD amount (unless already paid)' : '' ?>.</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px">
+            <div class="field" style="margin:0"><label for="addon_name">Perfume name</label><input id="addon_name" name="addon_name" type="text" maxlength="160" required></div>
+            <div class="field" style="margin:0"><label for="addon_size">Size</label><input id="addon_size" name="addon_size" type="text" maxlength="40" placeholder="20 ml / 50 ml / Attar"></div>
+            <div class="field" style="margin:0"><label for="addon_qty">Quantity</label><input id="addon_qty" name="addon_qty" type="number" min="1" value="1" required></div>
+            <div class="field" style="margin:0"><label for="addon_price">Price each (₹)</label><input id="addon_price" name="addon_price" type="text" inputmode="decimal" required></div>
           </div>
-          <div class="field" style="margin:0" id="addon-proof-box" hidden><label for="addon_proof">Payment screenshot (needed because an amount is prepaid)</label><input id="addon_proof" name="addon_proof" type="file" accept="image/*,application/pdf"></div>
-          <div class="hint" id="addon-sum" style="margin:0"></div>
+          <div class="field" style="margin:0"><label for="addon_details">Other details (optional)</label><input id="addon_details" name="addon_details" type="text" maxlength="300"></div>
+          <div class="field" style="margin:0"><label for="addon_paid">Payment for this add-on</label>
+            <select id="addon_paid" name="addon_paid">
+              <option value="paid">Already paid (screenshot needed)</option>
+              <?php if ($order['payment_mode'] === 'cod'): ?><option value="cod">Not paid: collect with COD</option><?php endif; ?>
+            </select></div>
+          <div class="field" style="margin:0" id="addon-proof-box"><label for="addon_proof">Payment screenshot</label><input id="addon_proof" name="addon_proof" type="file" accept="image/*,application/pdf"></div>
           <div><button class="btn btn-accent" type="submit">Save add-on</button></div>
         </form>
         <script>
         (function () {
-          var isCod = <?= $isCodOrder ? 'true' : 'false' ?>;
-          var rows = document.getElementById('addon-rows'), total = document.getElementById('addon_total'),
-              pre = document.getElementById('addon_prepaid'), cod = document.getElementById('addon_cod'),
-              box = document.getElementById('addon-proof-box'), file = document.getElementById('addon_proof'), sum = document.getElementById('addon-sum');
-          function n(v) { v = parseFloat(String(v).replace(/,/g, '')); return isNaN(v) ? 0 : v; }
-          function addRow() {
-            var d = document.createElement('div');
-            d.style.cssText = 'display:grid;grid-template-columns:minmax(0,1fr) 84px 64px 32px;gap:8px';
-            d.innerHTML = '<input name="addon_name[]" type="text" maxlength="160" placeholder="Product name" aria-label="Product name">' +
-              '<input name="addon_size[]" type="text" maxlength="20" inputmode="numeric" placeholder="ML" aria-label="Size in ml">' +
-              '<input name="addon_qty[]" type="number" min="1" value="1" aria-label="Quantity">' +
-              '<button class="btn btn-ghost btn-sm" type="button" aria-label="Remove product">&times;</button>';
-            d.querySelector('button').onclick = function () { if (rows.children.length > 1) { d.remove(); } };
-            rows.appendChild(d);
-          }
-          function sync(from) {
-            if (!isCod) { pre.value = total.value; }
-            else if (from === 'total' || from === 'pre') { cod.value = Math.max(0, n(total.value) - n(pre.value)); }
-            else if (from === 'cod') { pre.value = Math.max(0, n(total.value) - n(cod.value)); }
-            var paid = n(pre.value) > 0; box.hidden = !paid; file.required = paid;
-            var ok = Math.abs(n(pre.value) + n(cod.value) - n(total.value)) < 0.005;
-            sum.textContent = ok ? 'Prepaid ₹' + n(pre.value) + (isCod ? ' + COD ₹' + n(cod.value) : '') + ' = ₹' + n(total.value) : 'Prepaid + COD must equal the total add-on price.';
-          }
-          total.addEventListener('input', function () { sync('total'); });
-          pre.addEventListener('input', function () { sync('pre'); });
-          cod.addEventListener('input', function () { sync('cod'); });
-          document.getElementById('addon-more').onclick = addRow;
-          addRow(); addRow(); sync('total');
+          var sel = document.getElementById('addon_paid'), box = document.getElementById('addon-proof-box'), file = document.getElementById('addon_proof');
+          function sync() { var paid = sel.value === 'paid'; box.hidden = !paid; file.required = paid; }
+          sel.addEventListener('change', sync); sync();
         })();
         </script>
       </details>
