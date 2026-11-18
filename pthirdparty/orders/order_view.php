@@ -8,9 +8,11 @@ require_once __DIR__ . '/includes/dealer_send_lib.php';
 require_once __DIR__ . '/includes/shiprocket_lib.php';
 require_once __DIR__ . '/includes/order_account_lib.php';
 require_once __DIR__ . '/includes/order_dealer_lib.php';
+require_once __DIR__ . '/includes/addon_lib.php';
 $user = require_login();
 $pdo = db();
 $isAdmin = $user['role'] === 'admin';
+$canAddon = can_addon($pdo, $user); // manager or sales head
 
 $id = (int)($_GET['id'] ?? $_POST['id'] ?? 0);
 
@@ -29,7 +31,7 @@ if ($order && !empty($order['number_id'])) {
     $nr = $nq->fetch();
     $numLabel = $nr ? $nr['label'] . ($nr['phone'] ? ' (' . $nr['phone'] . ')' : '') : '';
 }
-if (!$order || (!$isAdmin && (int)$order['salesperson_id'] !== (int)$user['id'])) {
+if (!$order || (!$canAddon && (int)$order['salesperson_id'] !== (int)$user['id'])) {
     http_response_code(404);
     exit('Order not found.');
 }
@@ -54,6 +56,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->prepare('UPDATE orders SET tracking_id = ?, tracking_link = ?, status = ? WHERE id = ?')
                 ->execute([$tid === '' ? null : mb_substr($tid, 0, 100), $link === '' ? null : mb_substr($link, 0, 500), $newStatus, $id]);
             flash('ok', 'Tracking saved.');
+        } elseif ($action === 'addon_add') {
+            $amt = addon_add($pdo, $user, $id, $_POST, $_FILES['addon_proof'] ?? null);
+            flash('ok', 'Add-on of ' . inr($amt) . ' added to this order.');
+            redirect('order_view.php?id=' . $id . '#addons');
+        } elseif ($action === 'addon_remove') {
+            addon_remove($pdo, $user, $id, (int)($_POST['addon_id'] ?? 0));
+            flash('ok', 'Add-on removed.');
+            redirect('order_view.php?id=' . $id . '#addons');
         } elseif (!$isAdmin) {
             http_response_code(403);
             exit('Admin only.');
@@ -174,6 +184,8 @@ $items = $pdo->prepare(
 $items->execute([$id]);
 $lines = $items->fetchAll();
 
+$addons = addon_rows($pdo, $id);
+$addonSum = addon_total($addons);
 $cod = $pdo->prepare('SELECT c.amount, c.received_date, c.source, a.name AS account FROM cod_receipts c JOIN accounts a ON a.id = c.account_id WHERE c.order_id = ? ORDER BY c.id');
 $cod->execute([$id]);
 $codRows = $cod->fetchAll();
@@ -307,9 +319,72 @@ require __DIR__ . '/includes/header.php';
         <?php if ((float)$order['discount'] > 0): ?><div class="mini">Discount -<?= e(inr($order['discount'])) ?></div><?php endif; ?>
         <?php if ($isAdmin): ?><div class="mini">Total buying cost <?= e(inr(array_sum(array_map(static function ($x) { return $x['qty'] * $x['base_price']; }, $lines)))) ?></div><?php endif; ?>
         <div style="font-size:20px;font-weight:800">Total <?= e(inr($order['total'])) ?></div>
+        <?php if ($addonSum > 0): ?><div class="mini">includes add-ons <?= e(inr($addonSum)) ?></div><?php endif; ?>
         <?php if ($isAdmin): ?><div class="mini">Profit after discount <?= e(inr($order['profit'])) ?></div><?php endif; ?>
       </div>
     </section>
+
+    <?php if ($addons || $canAddon): ?>
+    <section class="card" id="addons">
+      <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <h2 style="margin:0">Add-ons <?php if ($addons): ?><span class="tag tag-info"><?= count($addons) ?></span><?php endif; ?></h2>
+        <?php if ($addons): ?><span class="mini">Add-ons total <?= e(inr($addonSum)) ?> (already inside the order total)</span><?php endif; ?>
+      </div>
+      <?php if ($addons): ?>
+      <div class="table-wrap"><table class="tight" style="min-width:560px">
+        <thead><tr><th>Perfume</th><th>Details</th><th class="num">Qty</th><th class="num">Price</th><th class="num">Amount</th><th>Payment</th><th>Proof</th><th>Added by</th><?php if ($isAdmin): ?><th></th><?php endif; ?></tr></thead>
+        <tbody>
+        <?php foreach ($addons as $ad): ?>
+          <tr>
+            <td><b><?= e($ad['name']) ?></b> <span class="tag tag-info">ADD-ON</span></td>
+            <td><?= e(trim($ad['size'] . ($ad['details'] !== '' ? ' · ' . $ad['details'] : ''), ' ·')) ?></td>
+            <td class="num"><?= (int)$ad['qty'] ?></td>
+            <td class="num"><?= e(inr($ad['price'])) ?></td>
+            <td class="num"><?= e(inr(addon_line_total($ad))) ?></td>
+            <td><?= $ad['paid'] ? '<span class="tag tag-ok">Paid</span>' : '<span class="tag tag-warn">Collect with COD</span>' ?></td>
+            <td><?php if ($ad['proof_file']): ?><a href="proof.php?a=<?= (int)$ad['id'] ?>" target="_blank" rel="noopener"><img src="proof.php?a=<?= (int)$ad['id'] ?>" alt="Payment screenshot" style="width:56px;height:56px;object-fit:cover;border-radius:8px;border:1px solid var(--field-line)"></a><?php else: ?><span class="mini">-</span><?php endif; ?></td>
+            <td><?= e($ad['by_name'] ?? '') ?><div class="mini"><?= e(date('d M, h:i A', strtotime($ad['created_at']))) ?></div></td>
+            <?php if ($isAdmin): ?><td><form method="post" onsubmit="return confirm('Remove this add-on? The order total, the COD amount and its money entry go back.');"><?= csrf_field() ?><input type="hidden" name="action" value="addon_remove"><input type="hidden" name="id" value="<?= (int)$id ?>"><input type="hidden" name="addon_id" value="<?= (int)$ad['id'] ?>"><button class="btn btn-ghost btn-sm btn-danger" type="submit">Remove</button></form></td><?php endif; ?>
+          </tr>
+        <?php endforeach; ?>
+        </tbody>
+      </table></div>
+      <?php else: ?>
+      <p class="hint" style="margin:0 0 10px">No add-ons yet.</p>
+      <?php endif; ?>
+      <?php if ($canAddon && in_array($order['status'], ['created', 'dispatched'], true)): ?>
+      <details style="margin-top:12px"<?= $addons ? '' : ' open' ?>><summary class="btn btn-accent btn-sm" style="display:inline-flex;cursor:pointer">+ Add on</summary>
+        <form method="post" enctype="multipart/form-data" style="margin-top:12px;display:grid;gap:12px" id="addon-form">
+          <?= csrf_field() ?>
+          <input type="hidden" name="action" value="addon_add">
+          <input type="hidden" name="id" value="<?= (int)$id ?>">
+          <div class="hint" style="margin:0">The customer already ordered, so do not cancel and create again. Write what the customer agreed to add. The amount is added to this order<?= $order['payment_mode'] === 'cod' ? ' and to the COD amount (unless already paid)' : '' ?>.</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px">
+            <div class="field" style="margin:0"><label for="addon_name">Perfume name</label><input id="addon_name" name="addon_name" type="text" maxlength="160" required></div>
+            <div class="field" style="margin:0"><label for="addon_size">Size</label><input id="addon_size" name="addon_size" type="text" maxlength="40" placeholder="20 ml / 50 ml / Attar"></div>
+            <div class="field" style="margin:0"><label for="addon_qty">Quantity</label><input id="addon_qty" name="addon_qty" type="number" min="1" value="1" required></div>
+            <div class="field" style="margin:0"><label for="addon_price">Price each (₹)</label><input id="addon_price" name="addon_price" type="text" inputmode="decimal" required></div>
+          </div>
+          <div class="field" style="margin:0"><label for="addon_details">Other details (optional)</label><input id="addon_details" name="addon_details" type="text" maxlength="300"></div>
+          <div class="field" style="margin:0"><label for="addon_paid">Payment for this add-on</label>
+            <select id="addon_paid" name="addon_paid">
+              <option value="paid">Already paid (screenshot needed)</option>
+              <?php if ($order['payment_mode'] === 'cod'): ?><option value="cod">Not paid: collect with COD</option><?php endif; ?>
+            </select></div>
+          <div class="field" style="margin:0" id="addon-proof-box"><label for="addon_proof">Payment screenshot</label><input id="addon_proof" name="addon_proof" type="file" accept="image/*,application/pdf"></div>
+          <div><button class="btn btn-accent" type="submit">Save add-on</button></div>
+        </form>
+        <script>
+        (function () {
+          var sel = document.getElementById('addon_paid'), box = document.getElementById('addon-proof-box'), file = document.getElementById('addon_proof');
+          function sync() { var paid = sel.value === 'paid'; box.hidden = !paid; file.required = paid; }
+          sel.addEventListener('change', sync); sync();
+        })();
+        </script>
+      </details>
+      <?php endif; ?>
+    </section>
+    <?php endif; ?>
 
     <?= shipment_block($pdo, $order, $isAdmin) ?>
     <?php if ($isAdmin && $order['status'] !== 'refunded') { echo dealer_send_block($pdo, $order); } ?>

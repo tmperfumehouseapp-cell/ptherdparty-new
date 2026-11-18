@@ -253,6 +253,8 @@ function delete_order(PDO $pdo, int $orderId): void
         $pdo->prepare('DELETE FROM refunds WHERE order_id = ?')->execute([$orderId]);
         $pdo->prepare('DELETE FROM orders WHERE id = ?')->execute([$orderId]); // items go with it
     });
+    require_once __DIR__ . '/addon_lib.php';
+    addon_delete_for($pdo, $orderId); // add-ons and their screenshots
     proof_delete_for($pdo, 'order', $orderId); // the payment screenshot and its file
     require_once __DIR__ . '/order_auto_lib.php';
     auto_delete_for($pdo, $orderId); // the extra screenshots and their payment-time reads

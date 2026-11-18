@@ -324,6 +324,17 @@ function sr_order_parts(PDO $pdo, array $order, int $partyId): array
             'units' => (int)$r['qty'], 'selling_price' => round(max($net, 0) / max((int)$r['qty'], 1), 2),
         ];
     }
+    // add-ons belong to no dealer: they travel with the order when one dealer ships all of it
+    if (count($dealers) <= 1) {
+        require_once __DIR__ . '/addon_lib.php';
+        foreach (addon_rows($pdo, (int)$order['id']) as $ad) {
+            $items[] = [
+                'name' => mb_substr('ADD-ON ' . $ad['name'] . ($ad['size'] !== '' ? ' ' . $ad['size'] : ''), 0, 120), 'sku' => 'ADDON' . (int)$ad['id'],
+                'units' => (int)$ad['qty'], 'selling_price' => round((float)$ad['price'], 2),
+            ];
+            $portion += addon_line_total($ad);
+        }
+    }
     $portion = round($portion, 2);
     $collect = 0.0;
     if ($order['payment_mode'] === 'cod') {
