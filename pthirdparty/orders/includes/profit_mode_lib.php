@@ -23,6 +23,9 @@ function profit_mode_ready(PDO $pdo): bool
     if ($has($pdo)) {
         return true;
     }
+    if ($pdo->inTransaction()) {
+        return false; // never change the table in the middle of a transaction (MySQL would end it); the next normal page load adds the columns
+    }
     if (!$tried) {
         $tried = true;
         try {
