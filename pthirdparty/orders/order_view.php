@@ -8,6 +8,7 @@ require_once __DIR__ . '/includes/dealer_send_lib.php';
 require_once __DIR__ . '/includes/shiprocket_lib.php';
 require_once __DIR__ . '/includes/order_account_lib.php';
 require_once __DIR__ . '/includes/order_dealer_lib.php';
+require_once __DIR__ . '/includes/order_edit_lib.php';
 $user = require_login();
 $pdo = db();
 $isAdmin = $user['role'] === 'admin';
@@ -57,6 +58,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif (!$isAdmin) {
             http_response_code(403);
             exit('Admin only.');
+        } elseif ($action === 'edit_items') {
+            flash('ok', order_edit_items($pdo, $user, $id, $_POST));
         } elseif ($action === 'pay_account') {
             flash('ok', order_pay_account_change($pdo, $user, $id, (int)($_POST['ledger_id'] ?? 0), (int)($_POST['to_account'] ?? 0)));
         } elseif ($action === 'wa_resend') {
@@ -168,7 +171,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $items = $pdo->prepare(
-    'SELECT oi.product_id, oi.qty, oi.sell_price, oi.base_price, oi.discount_share, oi.profit, p.name, p.image_url
+    'SELECT oi.id AS item_id, oi.product_id, oi.qty, oi.sell_price, oi.base_price, oi.discount_share, oi.profit, p.name, p.image_url
      FROM order_items oi JOIN products p ON p.id = oi.product_id WHERE oi.order_id = ? ORDER BY oi.id'
 );
 $items->execute([$id]);
@@ -211,6 +214,8 @@ if (orders_has_comm($pdo)) {
     }
 }
 
+$editProducts = ($isAdmin && $order['status'] !== 'refunded') ? order_edit_products($pdo) : [];
+$editHistory = $isAdmin ? order_edit_history($pdo, $id) : [];
 $payRows = $isAdmin ? order_pay_rows($pdo, $id) : [];
 $payAccounts = $isAdmin ? order_pay_accounts($pdo) : [];
 $accounts = $pdo->query('SELECT id, name FROM accounts WHERE is_active = 1 ORDER BY name')->fetchAll();
@@ -310,6 +315,105 @@ require __DIR__ . '/includes/header.php';
         <?php if ($isAdmin): ?><div class="mini">Profit after discount <?= e(inr($order['profit'])) ?></div><?php endif; ?>
       </div>
     </section>
+
+    <?php if ($editProducts): ?>
+    <section class="card" id="edit-products">
+      <h2>Edit products</h2>
+      <details<?= isset($_GET['editp']) ? ' open' : '' ?>><summary class="btn btn-ghost btn-sm" style="display:inline-flex;cursor:pointer">Edit products of this order</summary>
+        <form method="post" id="ep-form" style="margin-top:12px" onsubmit="return window.epCheck && window.epCheck();">
+          <?= csrf_field() ?>
+          <input type="hidden" name="action" value="edit_items">
+          <input type="hidden" name="id" value="<?= (int)$id ?>">
+          <datalist id="ep-list"><?php foreach ($editProducts as $ep): ?><option value="<?= e($ep['label']) ?>"><?= e((string)$ep['dealer']) ?></option><?php endforeach; ?></datalist>
+          <div id="ep-rows"></div>
+          <p style="margin:8px 0"><button type="button" id="ep-add" class="btn btn-ghost btn-sm">+ Add product</button></p>
+          <div class="field" style="max-width:220px"><label for="ep-discount">Overall discount (₹)</label><input id="ep-discount" name="discount" type="text" inputmode="decimal" value="<?= e((string)(float)$order['discount']) ?>"></div>
+          <div class="hint" id="ep-sum" style="font-weight:700"></div>
+          <div class="form-err" id="ep-err" role="alert" hidden style="margin:8px 0"></div>
+          <button class="btn btn-accent" type="submit">Save products</button>
+          <div class="hint">Type to search and pick the product from the list. A line that keeps its product keeps its saved buying price. A changed or new line takes the product's buying price from your product list; nobody types it. One order can have the products of one dealer only. Money already received is not changed.</div>
+        </form>
+      </details>
+      <?php if ($editHistory): ?>
+      <div class="hint" style="margin-top:12px"><b>Last edits</b></div>
+        <?php foreach ($editHistory as $eh): $b = json_decode((string)$eh['before_json'], true) ?: []; $a = json_decode((string)$eh['after_json'], true) ?: []; ?>
+        <div class="mini" style="margin:2px 0"><?= e(date('d M Y H:i', strtotime($eh['changed_at']))) ?> · <?= e((string)$eh['name']) ?> · total <?= e(inr($b['total'] ?? 0)) ?> → <?= e(inr($a['total'] ?? 0)) ?>, profit <?= e(inr($b['profit'] ?? 0)) ?> → <?= e(inr($a['profit'] ?? 0)) ?></div>
+        <?php endforeach; ?>
+      <?php endif; ?>
+    </section>
+    <script>
+    (function () {
+      var EP = <?= json_encode([
+          'products' => (object)array_map(static fn($ep) => ['label' => $ep['label'], 'base' => $ep['base'], 'dealer' => $ep['dealer']], $editProducts),
+          'lines' => array_map(static fn($l) => ['item_id' => (int)$l['item_id'], 'product_id' => (int)$l['product_id'], 'label' => $l['name'] . ' [#' . (int)$l['product_id'] . ']', 'qty' => (int)$l['qty'], 'sell' => (float)$l['sell_price'], 'base' => (float)$l['base_price']], $lines),
+      ], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE) ?>;
+      var rowsEl = document.getElementById('ep-rows'), addBtn = document.getElementById('ep-add'), sum = document.getElementById('ep-sum'), err = document.getElementById('ep-err');
+      var disc = document.getElementById('ep-discount');
+      if (!rowsEl || !addBtn) { return; }
+      var n = 0, rows = [];
+      function num(v) { return parseFloat(String(v == null ? '' : v).replace(/[^0-9.]/g, '')) || 0; }
+      function inr(v) { return '₹' + (Math.round(v * 100) / 100).toLocaleString('en-IN'); }
+      function esc(t) { return String(t == null ? '' : t).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+      function idOf(label) { var m = /\[#(\d+)\]\s*$/.exec(label || ''); return m ? parseInt(m[1], 10) : 0; }
+      function addRow(l) {
+        var k = n++;
+        var el = document.createElement('div');
+        el.style.cssText = 'display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;padding:10px;margin-bottom:8px;border:1px solid var(--line,#E2E8F0);border-radius:12px';
+        el.innerHTML =
+          '<input type="hidden" name="items[' + k + '][item_id]" value="' + (l ? l.item_id : 0) + '"><input type="hidden" name="items[' + k + '][product_id]" value="' + (l ? l.product_id : 0) + '">' +
+          '<div class="field" style="margin:0;flex:2 1 260px"><label>Product</label><input type="text" list="ep-list" class="ep-prod" autocomplete="off" placeholder="Type to search" value="' + esc(l ? l.label : '') + '"><div class="mini ep-info"></div></div>' +
+          '<div class="field" style="margin:0;flex:0 1 80px"><label>Qty</label><input type="text" inputmode="numeric" class="ep-qty" name="items[' + k + '][qty]" value="' + (l ? l.qty : 1) + '"></div>' +
+          '<div class="field" style="margin:0;flex:0 1 120px"><label>Sell price (₹)</label><input type="text" inputmode="decimal" class="ep-sell" name="items[' + k + '][sell_price]" value="' + (l ? l.sell : '') + '"></div>' +
+          '<div class="field" style="margin:0;flex:0 1 120px"><label>Buying (fixed)</label><input type="text" readonly tabindex="-1" class="ep-buy" style="background:#EEF1F5;font-weight:800"></div>' +
+          '<button type="button" class="btn btn-ghost btn-sm ep-x">Remove</button>';
+        rowsEl.appendChild(el);
+        var r = { el: el, itemId: l ? l.item_id : 0, origPid: l ? l.product_id : 0, origBase: l ? l.base : 0,
+                  prod: el.querySelector('.ep-prod'), pid: el.querySelector('input[name$="[product_id]"]'), qty: el.querySelector('.ep-qty'), sell: el.querySelector('.ep-sell'),
+                  buy: el.querySelector('.ep-buy'), info: el.querySelector('.ep-info') };
+        r.base = function () {
+          var pid = parseInt(r.pid.value, 10) || 0;
+          if (!pid) { return null; }
+          if (r.itemId && pid === r.origPid) { return r.origBase; }
+          var p = EP.products[pid];
+          return p && p.base != null ? p.base : null;
+        };
+        function pick() {
+          var pid = idOf(r.prod.value);
+          r.pid.value = EP.products[pid] || pid === r.origPid ? pid : 0;
+          var p = EP.products[pid];
+          r.info.textContent = p ? (p.dealer ? 'Dealer: ' + p.dealer : 'No dealer set') : (pid && pid === r.origPid ? '' : (r.prod.value ? 'Pick a product from the list' : ''));
+          calc();
+        }
+        r.prod.addEventListener('input', pick); r.prod.addEventListener('change', pick);
+        r.qty.addEventListener('input', calc); r.sell.addEventListener('input', calc);
+        el.querySelector('.ep-x').addEventListener('click', function () { rows = rows.filter(function (x) { return x !== r; }); el.remove(); calc(); });
+        rows.push(r); calc();
+      }
+      function calc() {
+        var subtotal = 0, buy = 0, bad = false;
+        rows.forEach(function (r) {
+          var q = Math.max(0, parseInt(r.qty.value, 10) || 0), s = num(r.sell.value), b = r.base();
+          r.buy.value = b == null ? (r.pid.value > 0 ? 'Not on website' : '') : inr(b);
+          subtotal += q * s; if (b == null) { bad = true; } else { buy += q * b; }
+        });
+        var d = Math.min(Math.max(num(disc.value), 0), subtotal);
+        var total = subtotal - d;
+        sum.textContent = rows.length ? 'Total ' + inr(total) + ' · buying ' + inr(buy) + (bad ? '' : ' · profit ' + inr(total - buy)) : 'Add at least one product.';
+      }
+      window.epCheck = function () {
+        err.hidden = true;
+        for (var i = 0; i < rows.length; i++) {
+          if (!(parseInt(rows[i].pid.value, 10) > 0)) { err.hidden = false; err.textContent = 'Choose each product from the list (type and pick).'; return false; }
+        }
+        if (!rows.length) { err.hidden = false; err.textContent = 'An order needs at least one product.'; return false; }
+        return confirm('Save these changes? Total, profit and the dealer money are recalculated.');
+      };
+      disc.addEventListener('input', calc);
+      addBtn.addEventListener('click', function () { addRow(null); });
+      EP.lines.forEach(addRow);
+    })();
+    </script>
+    <?php endif; ?>
 
     <?= shipment_block($pdo, $order, $isAdmin) ?>
     <?php if ($isAdmin && $order['status'] !== 'refunded') { echo dealer_send_block($pdo, $order); } ?>

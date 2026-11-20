@@ -16,11 +16,8 @@ function order_dealer_qr(PDO $pdo, int $partyId): ?array
     return $r ? ['id' => (int)$r['id'], 'name' => (string)$r['name']] : null;
 }
 
-/**
- * Checks the lines (each with product_id, party_id, name) and returns the account id the money must go to.
- * $posted = the account sent by the form (0 if none); only the manager's choice is honoured.
- */
-function order_resolve_account(PDO $pdo, array $user, array $lines, int $posted): int
+/** The ONE dealer of the lines (each with party_id and name), or an exception: no dealer set, or products of more than one dealer. */
+function order_single_dealer(PDO $pdo, array $lines): int
 {
     $party = null;
     foreach ($lines as $l) {
@@ -40,6 +37,16 @@ function order_resolve_account(PDO $pdo, array $user, array $lines, int $posted)
     if ($party === null) {
         throw new RuntimeException('Add at least one product.');
     }
+    return $party;
+}
+
+/**
+ * Checks the lines (each with product_id, party_id, name) and returns the account id the money must go to.
+ * $posted = the account sent by the form (0 if none); only the manager's choice is honoured.
+ */
+function order_resolve_account(PDO $pdo, array $user, array $lines, int $posted): int
+{
+    $party = order_single_dealer($pdo, $lines);
     $qr = order_dealer_qr($pdo, $party);
     if (!$qr) {
         $pn = $pdo->prepare('SELECT name FROM parties WHERE id = ?');
