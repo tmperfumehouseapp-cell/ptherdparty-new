@@ -238,6 +238,9 @@ function sr_poll_orders(PDO $pdo, int $maxOrders = 15, int $minMinutes = 20, int
             }
             $td = $d['tracking_data'] ?? [];
             $cs = (string)($td['shipment_track'][0]['current_status'] ?? $td['track_status'] ?? '');
+            if ($cs === '' && stripos((string)($td['error'] ?? ''), 'cancel') !== false) {
+                $cs = 'CANCELED'; // Shiprocket: "This AWB has been cancelled."
+            }
             $last = $cs !== '' ? $cs : $last;
             if (sr_is_delivered($cs, $td['shipment_status'] ?? null)) {
                 $dd = (string)($td['shipment_track'][0]['delivered_date'] ?? '');
@@ -256,6 +259,87 @@ function sr_poll_orders(PDO $pdo, int $maxOrders = 15, int $minMinutes = 20, int
             if (mark_delivered_on($pdo, (int)$o['id'], $when ?? date('Y-m-d'), null)) {
                 $r['delivered']++;
             }
+        }
+    }
+    return $r;
+}
+
+/**
+ * Pulls Shiprocket's own order list (a few calls for ALL orders) and saves, for every panel order whose Shiprocket Order ID is typed,
+ * the parcel status and AWB. This is what covers orders that have only a Shiprocket Order ID and no AWB yet.
+ * An empty tracking field is filled with the AWB; an order that Shiprocket calls delivered is marked delivered.
+ * Returns ['pulled' => orders saved, 'delivered', 'errors', 'first_error', 'seen' => orders read from Shiprocket].
+ */
+function sr_pull_orders(PDO $pdo, int $maxPages = 8, int $budgetSeconds = 30): array
+{
+    require_once __DIR__ . '/ops_lib.php';
+    require_once __DIR__ . '/order_tags_lib.php';
+    srs_ensure($pdo);
+    $r = ['pulled' => 0, 'delivered' => 0, 'errors' => 0, 'first_error' => '', 'seen' => 0];
+    try {
+        if (!$pdo->query("SHOW COLUMNS FROM orders LIKE 'shiprocket_order_id'")->fetch()) {
+            return $r;
+        }
+    } catch (Throwable $e) {
+        return $r;
+    }
+    $start = time();
+    $map = [];   // typed order id => Shiprocket order row
+    for ($page = 1; $page <= $maxPages && time() - $start <= $budgetSeconds; $page++) {
+        try {
+            $d = sr_call($pdo, 'GET', '/orders?per_page=100&page=' . $page);
+        } catch (Throwable $e) {
+            $r['errors']++;
+            $r['first_error'] = $e->getMessage();
+            break;
+        }
+        $rows = is_array($d['data'] ?? null) ? $d['data'] : [];
+        foreach ($rows as $o) {
+            if (!is_array($o)) {
+                continue;
+            }
+            $r['seen']++;
+            foreach (['channel_order_id', 'id'] as $k) {
+                $v = trim((string)($o[$k] ?? ''));
+                if ($v !== '' && !isset($map[$v])) {
+                    $map[$v] = $o;
+                }
+            }
+        }
+        $pages = (int)($d['meta']['pagination']['total_pages'] ?? 0);
+        if (!$rows || ($pages > 0 && $page >= $pages) || count($rows) < 100 && $pages === 0) {
+            break;
+        }
+    }
+    if (!$map) {
+        return $r;
+    }
+    $q = $pdo->query("SELECT id, status, tracking_id, shiprocket_order_id FROM orders WHERE shiprocket_order_id IS NOT NULL AND shiprocket_order_id <> ''");
+    $fill = $pdo->prepare("UPDATE orders SET tracking_id = ? WHERE id = ? AND (tracking_id IS NULL OR tracking_id = '')");
+    foreach ($q->fetchAll() as $o) {
+        $hit = null;
+        foreach (preg_split('/[\s,;\/|]+/', trim((string)$o['shiprocket_order_id'])) as $key) {
+            if ($key !== '' && isset($map[$key])) {
+                $hit = $map[$key];
+                break;
+            }
+        }
+        if (!$hit) {
+            continue;
+        }
+        $ship = is_array($hit['shipments'][0] ?? null) ? $hit['shipments'][0] : [];
+        $awb = trim((string)($ship['awb'] ?? $hit['awb_code'] ?? ''));
+        $status = trim((string)($hit['status'] ?? $ship['status'] ?? ''));
+        $dd = trim((string)($ship['delivered_date'] ?? ''));
+        $deliv = sr_is_delivered($status, $hit['status_code'] ?? null);
+        $when = $deliv ? ($dd !== '' && strtotime($dd) ? date('Y-m-d', strtotime($dd)) : date('Y-m-d')) : '';
+        srs_save($pdo, (int)$o['id'], ['status' => $status, 'awb' => $awb, 'pay' => (string)($hit['payment_method'] ?? ''), 'delivered_on' => $when, 'source' => 'sync']);
+        $r['pulled']++;
+        if ($awb !== '' && strlen(preg_replace('/[^A-Za-z0-9]/', '', $awb)) >= 8) {
+            $fill->execute([mb_substr($awb, 0, 100), (int)$o['id']]);
+        }
+        if ($deliv && in_array((string)$o['status'], ['created', 'dispatched'], true) && mark_delivered_on($pdo, (int)$o['id'], $when, $awb)) {
+            $r['delivered']++;
         }
     }
     return $r;
@@ -288,8 +372,15 @@ function sr_auto_run(PDO $pdo, bool $manual): array
     sr_conn_set($pdo, 'lock_until', (string)(time() + 120));
     $t0 = microtime(true);
     try {
+        $pull = sr_pull_orders($pdo);
         $res = sr_poll_orders($pdo, $manual ? 25 : 15, $manual ? 0 : 20, $manual ? 45 : 35);
         $res['error'] = '';
+        $res['pulled'] = $pull['pulled'];
+        $res['delivered'] += $pull['delivered'];
+        if ($pull['errors']) {
+            $res['errors'] += $pull['errors'];
+            $res['first_error'] = $res['first_error'] ?: 'Order list: ' . $pull['first_error'];
+        }
     } catch (Throwable $e) {
         $res = ['checked' => 0, 'delivered' => 0, 'errors' => 1, 'first_error' => $e->getMessage(), 'error' => $e->getMessage()];
     }

@@ -37,7 +37,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             @set_time_limit(80);
             $r = sr_auto_run($pdo, true);
             flash($r['error'] === '' && $r['errors'] === 0 ? 'ok' : 'error',
-                'Checked ' . $r['checked'] . ' order' . ($r['checked'] === 1 ? '' : 's') . ' in ' . round($r['ms'] / 1000, 1) . ' s: ' . $r['delivered'] . ' marked delivered'
+                'Read the Shiprocket order list: ' . (int)($r['pulled'] ?? 0) . ' panel orders updated. Checked ' . $r['checked'] . ' order' . ($r['checked'] === 1 ? '' : 's') . ' in ' . round($r['ms'] / 1000, 1) . ' s: ' . $r['delivered'] . ' marked delivered'
                 . ($r['errors'] ? '. ' . $r['errors'] . ' problem(s): ' . $r['first_error'] : '.'));
         } elseif ($action === 'token_new') {
             sr_conn_set($pdo, 'webhook_token', bin2hex(random_bytes(20)));

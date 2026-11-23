@@ -132,7 +132,7 @@ foreach ($q->fetchAll() as $r) {
     } elseif ($trk !== '' && !sr_awbs_of($trk)) {
         $why = 'Tracking ID is not a valid AWB (' . mb_substr($trk, 0, 20) . ')';
     } elseif ($trk === '') {
-        $why = 'Only a Shiprocket Order ID: the sync needs the AWB; upload the Shiprocket report to fill it';
+        $why = 'Only a Shiprocket Order ID: press Sync now (it reads Shiprocket\'s order list); if it stays, that ID is not in Shiprocket or has a typo';
     } elseif ($r['poll_status'] === null) {
         $why = 'Has an AWB but the sync has not reached it yet';
     } elseif ($r['poll_status'] === '-' || $r['poll_status'] === '') {
