@@ -13,6 +13,7 @@ $results = null;
 $summary = null;
 $colInfo = '';
 $groups = [];
+$reasons = [];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
@@ -37,7 +38,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $okSum = $res['sum'];
         $notRemitted = $res['notRemitted'];
         $delivCount = $res['delivered'];
-        $summary = ['ok' => $okCount, 'sum' => $okSum, 'bad' => count($results) - $okCount, 'notRemitted' => $notRemitted, 'delivered' => $delivCount];
+        $beforePanel = $res['beforePanel'];
+        $firstOrder = $res['firstOrder'];
+        $reasons = cod_reason_summary($results);
+        $summary = ['ok' => $okCount, 'sum' => $okSum, 'bad' => count($results) - $okCount, 'notRemitted' => $notRemitted, 'delivered' => $delivCount, 'before' => $beforePanel, 'firstOrder' => $firstOrder];
     } catch (RuntimeException $ex) {
         flash('error', $ex->getMessage());
         redirect('cod_upload.php');
@@ -64,8 +68,22 @@ require __DIR__ . '/includes/header.php';
         <div class="stat"><div class="k">Money added</div><div class="v"><?= e(inr($summary['sum'])) ?></div></div>
         <div class="stat"><div class="k">Skipped</div><div class="v <?= $summary['bad'] ? 'neg' : '' ?>"><?= (int)$summary['bad'] ?></div></div>
         <?php if ($summary['delivered'] > 0): ?><div class="stat"><div class="k">Also marked delivered</div><div class="v"><?= (int)$summary['delivered'] ?></div></div><?php endif; ?>
+        <?php if ($summary['before'] > 0): ?><div class="stat"><div class="k">From before the panel</div><div class="v"><?= (int)$summary['before'] ?></div><div class="mini">delivered before your first order (<?= e(date('d M Y', strtotime($summary['firstOrder']))) ?>), so not panel orders</div></div><?php endif; ?>
         <?php if ($summary['notRemitted'] > 0): ?><div class="stat"><div class="k">Not remitted yet</div><div class="v"><?= (int)$summary['notRemitted'] ?></div><div class="mini">no COD money in the file for these</div></div><?php endif; ?>
       </div>
+      <?php if ($reasons): ?>
+      <h3 style="margin:0 0 8px">Why rows were skipped</h3>
+      <div class="table-wrap" style="margin-bottom:16px"><table class="tight" style="min-width:560px">
+        <thead><tr><th>Reason</th><th class="num">Rows</th><th>Examples (row · AWB / order ID · amount)</th></tr></thead>
+        <tbody>
+        <?php foreach ($reasons as $rs): ?>
+          <tr><td><b><?= e($rs['label']) ?></b><?php if ($rs['hint'] !== ''): ?><div class="mini"><?= e($rs['hint']) ?></div><?php endif; ?></td>
+            <td class="num"><span class="tag tag-bad"><?= (int)$rs['n'] ?></span></td>
+            <td class="mini"><?php foreach ($rs['examples'] as $ex): ?><div><?= (int)$ex['row'] ?> · <?= e($ex['ref']) ?> · <?= e(inr($ex['amount'])) ?><?php if (strpos($rs['label'], 'more than') !== false): ?> · <?= e($ex['msg']) ?><?php endif; ?></div><?php endforeach; ?></td></tr>
+        <?php endforeach; ?>
+        </tbody>
+      </table></div>
+      <?php endif; ?>
       <?php if (count($groups) > 1 || (count($groups) === 1 && key($groups) !== '-')): ?>
       <h3 style="margin:0 0 8px">By remittance (match these with your bank)</h3>
       <div class="table-wrap" style="margin-bottom:16px"><table class="tight" style="min-width:560px">

@@ -102,6 +102,8 @@ function cod_process_rows(PDO $pdo, array $user, int $accId, array $rows): array
     $okSum = 0.0;
     $notRemitted = 0;
     $delivCount = 0;
+    $beforePanel = 0;
+    $firstOrder = (string)$pdo->query('SELECT MIN(order_date) FROM orders')->fetchColumn(); // parcels delivered before this cannot be panel orders
     for ($i = $cols['start']; $i < count($rows); $i++) {
         $r = $rows[$i];
         $cands = [];
@@ -130,6 +132,11 @@ function cod_process_rows(PDO $pdo, array $user, int $accId, array $rows): array
 
         $found = $ref !== '' ? dl_find_order($pdo, $cands, $hasSr) : null;
         if (!$found) {
+            $deliveredOn = sheet_date($cell($r, $cols['delivered'])) ?? $date;
+            if ($firstOrder !== '' && $deliveredOn < $firstOrder) { // from before the panel existed: not a failure, just not a panel order
+                $beforePanel++;
+                continue;
+            }
             $line['msg'] = 'No order with this AWB, Shiprocket order ID or order number.';
         } else {
             [$o, $by] = $found;
@@ -162,5 +169,39 @@ function cod_process_rows(PDO $pdo, array $user, int $accId, array $rows): array
         $results[] = $line;
     }
     $groups = cod_group_results($results);
-    return ['colInfo' => $colInfo, 'results' => $results, 'groups' => $groups, 'ok' => $okCount, 'sum' => $okSum, 'notRemitted' => $notRemitted, 'delivered' => $delivCount];
+    return ['colInfo' => $colInfo, 'results' => $results, 'groups' => $groups, 'ok' => $okCount, 'sum' => $okSum, 'notRemitted' => $notRemitted, 'delivered' => $delivCount, 'beforePanel' => $beforePanel, 'firstOrder' => $firstOrder];
+}
+
+/** Counts the skipped rows by reason, with a few examples of each, so the page can say what to fix. */
+function cod_reason_summary(array $results): array
+{
+    $cat = [
+        'not_found' => ['No order in the panel has this AWB or Shiprocket Order ID', 'Save the Shiprocket Order ID (or the full tracking ID) on those orders, then upload again.'],
+        'prepaid'   => ['The order is prepaid in the panel', 'A prepaid order has no COD money to receive.'],
+        'received'  => ['The COD money of the order was already saved', 'Nothing to do: it is not counted twice.'],
+        'pending'   => ['The amount in the report is more than the COD still pending in the panel', 'Compare the order total and advance in the panel with the report.'],
+        'refunded'  => ['The order is refunded', ''],
+        'other'     => ['Other', ''],
+    ];
+    $out = [];
+    foreach ($results as $r) {
+        if ($r['ok']) {
+            continue;
+        }
+        $m = (string)$r['msg'];
+        $k = preg_match('/^No order/', $m) ? 'not_found'
+            : (strpos($m, 'is prepaid') !== false ? 'prepaid'
+            : (strpos($m, 'fully received') !== false || strpos($m, 'already recorded') !== false ? 'received'
+            : (strpos($m, 'pending, you entered') !== false ? 'pending'
+            : (strpos($m, 'is refunded') !== false ? 'refunded' : 'other'))));
+        if (!isset($out[$k])) {
+            $out[$k] = ['label' => $cat[$k][0], 'hint' => $cat[$k][1], 'n' => 0, 'examples' => []];
+        }
+        $out[$k]['n']++;
+        if (count($out[$k]['examples']) < 3) {
+            $out[$k]['examples'][] = ['row' => $r['row'], 'ref' => $r['ref'], 'amount' => $r['amount'], 'msg' => $m];
+        }
+    }
+    uasort($out, static fn($a, $b) => $b['n'] <=> $a['n']);
+    return $out;
 }
