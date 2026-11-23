@@ -245,7 +245,7 @@ $st = $pdo->prepare(
             ' . ($isAdmin ? "(SELECT COALESCE(SUM(al.amount), 0) FROM account_ledger al WHERE al.order_id = o.id AND al.direction = 'in' AND al.entry_type IN ('prepaid','cod')) AS money_in,
             (SELECT COALESCE(SUM(rf.amount), 0) FROM refunds rf WHERE rf.order_id = o.id) AS refunded_amt," : '') . ($tagsOk
                 ? "(SELECT s.status FROM sr_status s WHERE s.order_id = o.id) AS sr_status, (SELECT s.utr FROM sr_status s WHERE s.order_id = o.id) AS sr_utr,
-                   (SELECT s.crf FROM sr_status s WHERE s.order_id = o.id) AS sr_crf," : '') . '
+                   (SELECT s.crf FROM sr_status s WHERE s.order_id = o.id) AS sr_crf, (SELECT s.status_date FROM sr_status s WHERE s.order_id = o.id) AS sr_date, (SELECT s.shipped_on FROM sr_status s WHERE s.order_id = o.id) AS sr_shipped, o.delivered_at," : '') . '
             (' . $preExpr . ') AS prepaid_amt, (' . $codExpr . ') AS cod_amt
      FROM orders o JOIN users u ON u.id = o.salesperson_id LEFT JOIN order_numbers n ON n.id = o.number_id' . $w .
     ' ORDER BY o.id DESC LIMIT ' . $per . ' OFFSET ' . (($page - 1) * $per)
@@ -464,7 +464,7 @@ $ckr = $ck->fetch();
           <?php elseif ($mode === 'cod' || $mode === 'cod_due'): ?><td class="num"><?= e(inr($codAmt)) ?></td><td class="num"><?= $refunded || $due <= 0.004 ? '-' : '<span class="tag tag-warn">' . e(inr($due)) . '</span>' ?></td>
           <?php endif; ?>
           <td class="st-cell"><span class="tag <?= e(status_tag_class($r['status'])) ?>"><?= e(status_label($r['status'])) ?></span><?= $isAdmin ? wa_badge($r) : '' ?>
-            <?php if ($tagsOk): ?><div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px"><?php foreach (order_tag_list($r) as [$tl, $tc, $tt]): ?><span class="tag <?= e($tc) ?>" title="<?= e($tt) ?>"><?= e($tl) ?></span><?php endforeach; ?></div><?php endif; ?></td>
+            <?php if ($tagsOk): ?><div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px"><?php foreach (order_tag_list($r) as [$tl, $tc, $tt]): ?><span class="tag <?= e($tc) ?>" title="<?= e($tt) ?>"><?= e($tl) ?></span><?php endforeach; ?></div><?php $td = order_tag_dates($r); if ($td): ?><div class="mini" style="margin-top:3px<?= $td['late'] ? ';color:#B42318;font-weight:600' : '' ?>"><?= e($td['text']) ?></div><?php endif; ?><?php endif; ?></td>
           <?php if ($isAdmin): ?><td><?= e($r['sales_name']) ?></td><?php endif; ?>
           <?php if ($chkReady): ?>
           <td class="chk-cell" style="white-space:nowrap" data-v="<?= $r['verified_at'] === null ? 0 : 1 ?>" data-b="<?= $r['billed_at'] === null ? 0 : 1 ?>"><?= order_check_cell_html((int)$r['id'], $r['verified_at'], $r['billed_at'], (string)($_SERVER['QUERY_STRING'] ?? '')) ?></td>

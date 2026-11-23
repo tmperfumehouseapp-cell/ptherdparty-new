@@ -101,12 +101,24 @@ function dl_detect_columns(array $rows): array
         'remit_date' => $pick(['cod remittance date', 'remittance date']),
         'remit_amt'  => $pick(['remitted amount']),
     ];
+    // the dates Shiprocket writes for each step of a parcel: the latest one is "when did it last move", the pick-up / shipped one is "since when is it on the way"
+    $events = [];
+    foreach (['order delivered date', 'rto delivered date', 'rto initiated date', 'latest ndr date', 'latest ofd date', 'first out for delivery date',
+              'order shipped date', 'order picked up date', 'pickup scheduled date', 'manifested date', 'awb assigned date', 'lost date', 'shiprocket created at'] as $n) {
+        $c = $pick([$n]);
+        if ($c !== null) {
+            $events[] = $c;
+        }
+    }
+    $shippedCols = array_values(array_filter([$pick(['order shipped date']), $pick(['order picked up date']), $pick(['pickedup timestamp'])], static fn($c) => $c !== null));
+    $extra['events'] = $events;
+    $extra['shipped'] = $shippedCols;
     $label = static function (array $cols) use ($rows): string {
         return implode(', ', array_map(static fn($c) => 'column ' . dl_col_letter($c) . ' "' . trim(str_replace("\xEF\xBB\xBF", '', (string)($rows[0][$c] ?? ''))) . '"', $cols)) ?: 'none';
     };
     if (!$order && !$track) { // no header row: A order number, B tracking ID, C status, D date (the IDs are matched whichever way round they are)
         return ['start' => 0, 'order' => [0], 'track' => [1], 'status' => 2, 'date' => 3, 'header' => false,
-                'name' => null, 'amount' => null, 'created' => null, 'pay' => null, 'crf' => null, 'utr' => null, 'remit_date' => null, 'remit_amt' => null,
+                'name' => null, 'amount' => null, 'created' => null, 'pay' => null, 'crf' => null, 'utr' => null, 'remit_date' => null, 'remit_amt' => null, 'events' => [], 'shipped' => [],
                 'names' => 'no header row found, so: column A = order number, column B = tracking ID, column C = status, column D = date'];
     }
     return [
@@ -114,6 +126,7 @@ function dl_detect_columns(array $rows): array
         'order'  => $order, 'track' => $track, 'status' => $status, 'date' => $date,
         'name' => $extra['name'], 'amount' => $extra['amount'], 'created' => $extra['created'], 'pay' => $extra['pay'],
         'crf' => $extra['crf'], 'utr' => $extra['utr'], 'remit_date' => $extra['remit_date'], 'remit_amt' => $extra['remit_amt'],
+        'events' => $extra['events'], 'shipped' => $extra['shipped'],
         'names'  => 'Order ID: ' . $label($order) . ' | Tracking / AWB: ' . $label($track)
                   . ' | Status: ' . ($status !== null ? $label([$status]) : 'none (every row counts as delivered)')
                   . ' | Delivered date: ' . ($date !== null ? $label([$date]) : 'none'),
@@ -410,6 +423,21 @@ function dl_process_rows(PDO $pdo, array $rows): array
                  'name' => $cell($r, $cols['name']), 'amount' => $cols['amount'] !== null ? num($cell($r, $cols['amount'])) : 0.0,
                  'kind' => '', 'ok' => false, 'msg' => '', 'order_id' => null, 'suggest' => []];
 
+        $evLast = '';
+        foreach ($cols['events'] ?? [] as $c) {
+            $dv = sheet_date($cell($r, $c));
+            if ($dv !== null && $dv > $evLast && $dv <= date('Y-m-d', strtotime('+1 day'))) {
+                $evLast = $dv;
+            }
+        }
+        $evShip = '';
+        foreach ($cols['shipped'] ?? [] as $c) {
+            $dv = sheet_date($cell($r, $c));
+            if ($dv !== null) {
+                $evShip = $dv;
+                break;
+            }
+        }
         $found = dl_find_order($pdo, $cands, $hasSr, !$cols['header']);
         if ($found) { // what Shiprocket says about this parcel is saved on the order (status, COD remittance) for the tags on the Orders page
             $used[(int)$found[0]['id']] = true;
@@ -417,6 +445,7 @@ function dl_process_rows(PDO $pdo, array $rows): array
                 'status' => $statusText, 'pay' => $cell($r, $cols['pay']), 'awb' => $awb, 'delivered_on' => $date,
                 'crf' => $cell($r, $cols['crf']), 'utr' => $cell($r, $cols['utr']), 'remit_date' => $cell($r, $cols['remit_date']),
                 'remit_amount' => $cell($r, $cols['remit_amt']), 'source' => 'report',
+                'status_date' => $evLast, 'shipped_on' => $evShip,
             ]);
             $line['order_id'] = (int)$found[0]['id'];
         }
