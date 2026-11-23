@@ -156,4 +156,5 @@ require __DIR__ . '/includes/header.php';
   });
 })();
 </script>
+<p class="hint" style="margin-top:18px">Want to enter COD money again by hand, order by order? <a href="cod_reset.php">Set all COD received to zero</a> (a backup is saved first, and it can be undone).</p>
 <?php require __DIR__ . '/includes/footer.php'; ?>
