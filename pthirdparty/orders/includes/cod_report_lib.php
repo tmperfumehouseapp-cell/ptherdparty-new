@@ -45,10 +45,12 @@ function cod_detect_columns(array $rows): array
     $crf = $pick(['crf id', 'crf', 'crf no', 'crf no.']);
     $utr = $pick(['utr', 'utr no', 'utr no.', 'utr number']);
     $status = $pick(['status', 'order status', 'shipment status']);
+    $name = $pick(['customer name', 'buyer name', 'name']);
+    $created = $pick(['channel created at', 'order date', 'created at', 'order created date', 'shiprocket created at']);
 
     if (!$order && !$track) { // no header row: A order number or tracking ID, B amount, C date (the old layout)
         return ['start' => preg_match('/\d/', (string)($rows[0][1] ?? '')) ? 0 : 1, 'header' => false, 'order' => [0], 'track' => [],
-                'amount' => 1, 'date' => 2, 'delivered' => null, 'crf' => null, 'utr' => null, 'status' => null,
+                'amount' => 1, 'date' => 2, 'delivered' => null, 'crf' => null, 'utr' => null, 'status' => null, 'name' => null, 'created' => null,
                 'names' => 'no header row, so: column A = order number or tracking ID, column B = amount, column C = date'];
     }
     $label = static function (array $cols) use ($rows): string {
@@ -57,7 +59,7 @@ function cod_detect_columns(array $rows): array
     $one = static fn(?int $c) => $c === null ? 'none' : $label([$c]);
     return [
         'start' => 1, 'header' => true, 'order' => $order, 'track' => $track,
-        'amount' => $amount, 'date' => $date, 'delivered' => $delivered, 'crf' => $crf, 'utr' => $utr, 'status' => $status,
+        'amount' => $amount, 'date' => $date, 'delivered' => $delivered, 'crf' => $crf, 'utr' => $utr, 'status' => $status, 'name' => $name, 'created' => $created,
         'names' => 'Order ID: ' . $label($order) . ' | AWB: ' . $label($track) . ' | COD amount: ' . $one($amount)
                  . ' | Remittance date: ' . $one($date) . ' | CRF ID: ' . $one($crf) . ' | UTR: ' . $one($utr)
                  . ' | Delivered date: ' . $one($delivered) . ($status !== null ? ' | Status: ' . $one($status) : ''),
@@ -71,13 +73,15 @@ function cod_group_results(array $results): array
     foreach ($results as $r) {
         $key = $r['crf'] !== '' ? $r['crf'] : ($r['utr'] !== '' ? $r['utr'] : '-');
         if (!isset($g[$key])) {
-            $g[$key] = ['crf' => $r['crf'], 'utr' => $r['utr'], 'date' => $r['date'], 'rows' => 0, 'saved' => 0, 'skipped' => 0, 'in_file' => 0.0, 'saved_amt' => 0.0];
+            $g[$key] = ['crf' => $r['crf'], 'utr' => $r['utr'], 'date' => $r['date'], 'rows' => 0, 'saved' => 0, 'already' => 0, 'skipped' => 0, 'in_file' => 0.0, 'saved_amt' => 0.0];
         }
         $g[$key]['rows']++;
         $g[$key]['in_file'] += (float)$r['amount'];
         if ($r['ok']) {
             $g[$key]['saved']++;
             $g[$key]['saved_amt'] += (float)$r['amount'];
+        } elseif (($r['kind'] ?? '') === 'already') {
+            $g[$key]['already']++;
         } else {
             $g[$key]['skipped']++;
         }
@@ -103,6 +107,7 @@ function cod_process_rows(PDO $pdo, array $user, int $accId, array $rows): array
     $notRemitted = 0;
     $delivCount = 0;
     $beforePanel = 0;
+    $used = [];
     $firstOrder = (string)$pdo->query('SELECT MIN(order_date) FROM orders')->fetchColumn(); // parcels delivered before this cannot be panel orders
     for ($i = $cols['start']; $i < count($rows); $i++) {
         $r = $rows[$i];
@@ -136,9 +141,10 @@ function cod_process_rows(PDO $pdo, array $user, int $accId, array $rows): array
         }
         $date = sheet_date($remitText) ?? biz_today();
         $line = ['row' => $i + 1, 'ref' => $ref, 'srid' => $srid, 'awb' => $awb, 'amount' => $amt, 'date' => $date, 'delivered' => sheet_date($cell($r, $cols['delivered'])),
-                 'crf' => dl_norm($cell($r, $cols['crf'])), 'utr' => $cell($r, $cols['utr']), 'ok' => false, 'msg' => '', 'kind' => ''];
+                 'crf' => dl_norm($cell($r, $cols['crf'])), 'utr' => $cell($r, $cols['utr']), 'ok' => false, 'msg' => '', 'kind' => '',
+                 'name' => $cell($r, $cols['name']), 'created' => $cols['created'] !== null ? sheet_date($cell($r, $cols['created'])) : null, 'order_id' => null, 'suggest' => []];
 
-        $found = $ref !== '' ? dl_find_order($pdo, $cands, $hasSr) : null;
+        $found = $ref !== '' ? dl_find_order($pdo, $cands, $hasSr, !$cols['header']) : null;
         if (!$found) {
             $deliveredOn = sheet_date($cell($r, $cols['delivered'])) ?? $date;
             if ($firstOrder !== '' && $deliveredOn < $firstOrder) { // from before the panel existed: not a failure, just not a panel order
@@ -150,6 +156,8 @@ function cod_process_rows(PDO $pdo, array $user, int $accId, array $rows): array
         } else {
             [$o, $by] = $found;
             $orderId = (int)$o['id'];
+            $used[$orderId] = true;
+            $line['order_id'] = $orderId;
             try {
                 add_cod_receipt($pdo, $user, $orderId, $amt, $accId, $date, 'excel');
                 $line['ok'] = true;
@@ -174,12 +182,22 @@ function cod_process_rows(PDO $pdo, array $user, int $accId, array $rows): array
                 }
             } catch (RuntimeException $ex) {
                 $line['msg'] = $ex->getMessage();
-                $line['kind'] = cod_reason_key($line['msg']);
+                $k = cod_reason_key($line['msg']);
+                $line['kind'] = $k === 'received' ? 'already' : $k; // the money of this parcel was saved before: that is fine, not a problem
             }
         }
         $results[] = $line;
     }
     $groups = cod_group_results($results);
+    if (array_filter($results, static fn($r) => $r['kind'] === 'unmatched')) { // "maybe this order" for every unmatched row
+        $pool = dl_order_pool($pdo, $used);
+        foreach ($results as &$l) {
+            if ($l['kind'] === 'unmatched') {
+                $l['suggest'] = dl_suggest_orders($l, $pool, true);
+            }
+        }
+        unset($l);
+    }
     return ['colInfo' => $colInfo, 'results' => $results, 'groups' => $groups, 'ok' => $okCount, 'sum' => $okSum, 'notRemitted' => $notRemitted, 'delivered' => $delivCount, 'beforePanel' => $beforePanel, 'firstOrder' => $firstOrder];
 }
 
@@ -221,4 +239,17 @@ function cod_reason_key(string $m): string
         : (strpos($m, 'fully received') !== false || strpos($m, 'already recorded') !== false ? 'received'
         : (strpos($m, 'pending, you entered') !== false ? 'pending'
         : (strpos($m, 'is refunded') !== false ? 'refunded' : 'other'))));
+}
+
+/**
+ * One-click fix of an unmatched COD row: writes the report's Shiprocket Order ID on the chosen order, saves the COD money of the row
+ * into account $accId, and marks the parcel delivered. Returns a sentence.
+ */
+function cod_link_order(PDO $pdo, array $user, int $orderId, string $srid, string $awb, float $amount, string $remitDate, ?string $deliveredOn, int $accId): string
+{
+    return in_tx($pdo, function () use ($pdo, $user, $orderId, $srid, $awb, $amount, $remitDate, $deliveredOn, $accId) {
+        $msg = dl_link_order($pdo, $orderId, $srid, $awb, $deliveredOn ?? $remitDate);
+        add_cod_receipt($pdo, $user, $orderId, $amount, $accId, $remitDate, 'excel');
+        return rtrim($msg, '.') . '; COD ' . inr($amount) . ' saved.';
+    });
 }

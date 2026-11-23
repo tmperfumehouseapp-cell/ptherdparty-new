@@ -65,10 +65,12 @@ function dl_detect_columns(array $rows): array
     $head = array_map($norm, $rows[0] ?? []);
     $order = $track = [];
     $status = $date = null;
+    $byName = [];
     foreach ($head as $i => $h) {
         if ($h === '') {
             continue;
         }
+        $byName[$h] = $byName[$h] ?? $i;
         if (preg_match('/^(order |shipment |delivery |current )?status$/', $h)) {
             $status = $status ?? $i;
         } elseif (preg_match('/^(awb( code| no\.?| number)?|tracking( id| no\.?| number| code)?|waybill( no\.?| number)?|way bill( no\.?)?|lr no\.?)$/', $h)) {
@@ -79,16 +81,33 @@ function dl_detect_columns(array $rows): array
             $date = $date ?? $i;
         }
     }
+    $pick = static function (array $names) use ($byName): ?int {
+        foreach ($names as $n) {
+            if (isset($byName[$n])) {
+                return $byName[$n];
+            }
+        }
+        return null;
+    };
+    // helpers only for the "maybe this order" suggestions (never used to mark anything by themselves)
+    $extra = [
+        'name'    => $pick(['customer name', 'buyer name', 'name']),
+        'amount'  => $pick(['order total', 'order value', 'cod amount', 'amount']),
+        'created' => $pick(['channel created at', 'order date', 'created at', 'order created date', 'shiprocket created at']),
+        'pay'     => $pick(['payment method', 'payment mode', 'order type']),
+    ];
     $label = static function (array $cols) use ($rows): string {
         return implode(', ', array_map(static fn($c) => 'column ' . dl_col_letter($c) . ' "' . trim(str_replace("\xEF\xBB\xBF", '', (string)($rows[0][$c] ?? ''))) . '"', $cols)) ?: 'none';
     };
     if (!$order && !$track) { // no header row: A order number, B tracking ID, C status, D date (the IDs are matched whichever way round they are)
         return ['start' => 0, 'order' => [0], 'track' => [1], 'status' => 2, 'date' => 3, 'header' => false,
+                'name' => null, 'amount' => null, 'created' => null, 'pay' => null,
                 'names' => 'no header row found, so: column A = order number, column B = tracking ID, column C = status, column D = date'];
     }
     return [
         'start'  => 1, 'header' => true,
         'order'  => $order, 'track' => $track, 'status' => $status, 'date' => $date,
+        'name' => $extra['name'], 'amount' => $extra['amount'], 'created' => $extra['created'], 'pay' => $extra['pay'],
         'names'  => 'Order ID: ' . $label($order) . ' | Tracking / AWB: ' . $label($track)
                   . ' | Status: ' . ($status !== null ? $label([$status]) : 'none (every row counts as delivered)')
                   . ' | Delivered date: ' . ($date !== null ? $label([$date]) : 'none'),
@@ -117,10 +136,10 @@ function dl_has_table(PDO $pdo, string $t): bool
  *   2. the Shiprocket order id of a shipment the panel booked (shipments table)
  *   3. the tracking ID / AWB saved on the order (also one item of a list like "AWB1, AWB2")
  *   4. the AWB of a shipment the panel booked
- *   5. our own order number (short numbers only)
+ *   5. our own serial number (#0081): ONLY when $allowOrderNumber (a sheet without a header row). It is just a reference number.
  * A long ID is only accepted when it points to ONE order.
  */
-function dl_find_order(PDO $pdo, array $candidates, bool $hasSr): ?array
+function dl_find_order(PDO $pdo, array $candidates, bool $hasSr, bool $allowOrderNumber = false): ?array
 {
     $cands = [];
     foreach ($candidates as $c) {
@@ -184,7 +203,7 @@ function dl_find_order(PDO $pdo, array $candidates, bool $hasSr): ?array
             }
         }
     }
-    foreach ($cands as $c) {
+    foreach ($allowOrderNumber ? $cands : [] as $c) {
         if (preg_match('/^#?0*(\d{1,7})$/', $c, $m) && (int)$m[1] > 0) { // short numbers only: a long number is a tracking / Shiprocket ID, never ours
             $byId->execute([(int)$m[1]]);
             if ($o = $byId->fetch()) {
@@ -216,12 +235,136 @@ function dl_orders_without_sr(PDO $pdo, string $only, int $limit = 60): ?array
     }
 }
 
+/** Letters only, lower case: "Aahad " and "ahad" become comparable. */
+function dl_name_key(string $n): string
+{
+    return preg_replace('/[^a-z]/', '', strtolower(trim($n)));
+}
+
+/** Two customer names that are probably the same person (typos and a missing first / last name allowed). */
+function dl_names_alike(string $a, string $b): bool
+{
+    $a = dl_name_key($a);
+    $b = dl_name_key($b);
+    if (strlen($a) < 3 || strlen($b) < 3) {
+        return false;
+    }
+    if ($a === $b) {
+        return true;
+    }
+    if (strlen($a) >= 4 && strlen($b) >= 4 && (strpos($a, $b) !== false || strpos($b, $a) !== false)) {
+        return true;
+    }
+    return levenshtein(substr($a, 0, 60), substr($b, 0, 60)) <= max(1, (int)floor(min(strlen($a), strlen($b)) / 4));
+}
+
+/** The orders a report row could belong to: every order not yet matched in this upload (newest first). */
+function dl_order_pool(PDO $pdo, array $usedIds, int $limit = 2500): array
+{
+    $rows = $pdo->query("SELECT id, order_date, customer_name, status, payment_mode, total, advance_amount, shiprocket_order_id FROM orders WHERE status <> 'refunded' ORDER BY id DESC LIMIT " . (int)$limit)->fetchAll();
+    return array_values(array_filter($rows, static fn($o) => !isset($usedIds[(int)$o['id']])));
+}
+
+/**
+ * "Maybe this order" for a report row that matched nothing: panel orders that look like it. Reasons: the Shiprocket Order ID typed in the panel is
+ * 1-2 digits off, the customer name is alike, the amount is the same, the date fits. Returns up to 3 [order row, why, score], best first.
+ * $codOnly: the report is a COD report (only COD orders, compared on the COD balance).
+ */
+function dl_suggest_orders(array $line, array $pool, bool $codOnly = false): array
+{
+    $sr = (string)($line['srid'] ?? '');
+    $amount = (float)($line['amount'] ?? 0);
+    $ref = $line['created'] ?? ($line['delivered'] ?? ($line['date'] ?? null)); // a date the order should be close to
+    $out = [];
+    foreach ($pool as $o) {
+        if ($codOnly && $o['payment_mode'] !== 'cod') {
+            continue;
+        }
+        $saved = dl_norm((string)($o['shiprocket_order_id'] ?? ''));
+        $score = 0.0;
+        $why = [];
+        $typo = false;
+        if ($saved !== '' && $sr !== '' && strlen($saved) >= 6 && abs(strlen($saved) - strlen($sr)) <= 2) {
+            $d = levenshtein($saved, $sr);
+            if ($d <= 1) {
+                $score += 4;
+                $typo = true;
+                $why[] = 'the ID typed in the panel (' . $saved . ') is 1 digit different';
+            } elseif ($d === 2) {
+                $score += 2.5;
+                $typo = true;
+                $why[] = 'the ID typed in the panel (' . $saved . ') is 2 digits different';
+            }
+        }
+        $nameOk = !empty($line['name']) && dl_names_alike((string)$line['name'], (string)$o['customer_name']);
+        if ($nameOk) {
+            $score += 2;
+            $why[] = 'same customer name';
+        }
+        $bal = $codOnly ? (float)$o['total'] - (float)$o['advance_amount'] : (float)$o['total'];
+        $amtOk = $amount > 0 && (abs($bal - $amount) < 0.5 || abs((float)$o['total'] - $amount) < 0.5);
+        if ($amtOk) {
+            $score += 1.5;
+            $why[] = 'same amount ' . inr($amount);
+        }
+        $dateOk = false;
+        if ($ref) {
+            $diff = (strtotime((string)$ref) - strtotime((string)$o['order_date'])) / 86400;
+            $dateOk = $diff >= -3 && $diff <= 45;
+            if ($dateOk) {
+                $score += 0.6;
+            }
+        }
+        if ($saved !== '' && !$typo) {
+            $score -= 1.5; // the order already has a different, complete Shiprocket Order ID: probably another parcel
+        }
+        if ($score >= 2 && ($typo || $nameOk || ($amtOk && $dateOk))) {
+            $out[] = ['order' => $o, 'why' => implode(' + ', $why) . ($dateOk && !$typo ? ' + date fits' : ''), 'score' => $score];
+        }
+    }
+    usort($out, static fn($a, $b) => $b['score'] <=> $a['score'] ?: (int)$b['order']['id'] <=> (int)$a['order']['id']);
+    return array_slice($out, 0, 3);
+}
+
+/**
+ * Writes the report's Shiprocket Order ID on an order (the one-click fix for an unmatched row) and marks it delivered when it is created / dispatched.
+ * Returns a sentence. Refuses when another order already has that Shiprocket Order ID.
+ */
+function dl_link_order(PDO $pdo, int $orderId, string $srid, string $awb, ?string $deliveredOn): string
+{
+    $srid = dl_norm($srid);
+    if ($srid === '') {
+        throw new RuntimeException('This report row has no Shiprocket Order ID.');
+    }
+    $o = $pdo->prepare('SELECT id, status, shiprocket_order_id FROM orders WHERE id = ?');
+    $o->execute([$orderId]);
+    $order = $o->fetch();
+    if (!$order) {
+        throw new RuntimeException('Order not found.');
+    }
+    if ($order['status'] === 'refunded') {
+        throw new RuntimeException('This order is refunded.');
+    }
+    $dup = $pdo->prepare('SELECT id FROM orders WHERE shiprocket_order_id = ? AND id <> ? LIMIT 1');
+    $dup->execute([$srid, $orderId]);
+    if ($other = $dup->fetchColumn()) {
+        throw new RuntimeException('Order ' . order_no($other) . ' already has this Shiprocket Order ID.');
+    }
+    $pdo->prepare('UPDATE orders SET shiprocket_order_id = ? WHERE id = ?')->execute([$srid, $orderId]);
+    $msg = 'Shiprocket Order ID ' . $srid . ' saved on ' . order_no($orderId) . (trim((string)$order['shiprocket_order_id']) !== '' ? ' (it was ' . $order['shiprocket_order_id'] . ')' : '');
+    if (in_array($order['status'], ['created', 'dispatched'], true) && mark_delivered_on($pdo, $orderId, $deliveredOn, $awb !== '' ? $awb : null)) {
+        $msg .= ' and marked delivered';
+    }
+    return $msg . '.';
+}
+
 /**
  * Marks the parcels of a Shiprocket report delivered. Returns
- * ['colInfo', 'results' (a line per row: row, ref, srid, awb, date, kind, ok, msg), 'counts', 'firstOrder'].
- * kind: ok = marked delivered | already = found, but already delivered | unmatched = no order has this Shiprocket Order ID / AWB |
+ * ['colInfo', 'results' (a line per row: row, ref, srid, awb, date, name, amount, kind, ok, msg, suggest), 'counts', 'firstOrder'].
+ * kind: ok = marked delivered now | already = found, was already delivered | unmatched = no order has this Shiprocket Order ID / AWB |
  *       status = the report says it is not delivered | other = found, but returned / refunded.
  * Parcels delivered before the panel's first order are only counted (counts['before']), they cannot be panel orders.
+ * The Shiprocket Order ID is the main key; our own serial number (#0081) is never used for a report with a header row.
  */
 function dl_process_rows(PDO $pdo, array $rows): array
 {
@@ -237,8 +380,10 @@ function dl_process_rows(PDO $pdo, array $rows): array
         }
         return '';
     };
+    $cell = static fn(array $r, ?int $c): string => $c === null ? '' : trim((string)($r[$c] ?? ''));
     $counts = ['ok' => 0, 'already' => 0, 'unmatched' => 0, 'status' => 0, 'other' => 0, 'before' => 0];
     $results = [];
+    $used = [];
     for ($i = $cols['start']; $i < count($rows); $i++) {
         $r = $rows[$i];
         $cands = [];
@@ -252,7 +397,10 @@ function dl_process_rows(PDO $pdo, array $rows): array
         }
         $statusText = $cols['status'] !== null ? trim((string)($r[$cols['status']] ?? '')) : '';
         $date = $cols['date'] !== null ? sheet_date((string)($r[$cols['date']] ?? '')) : null;
-        $line = ['row' => $i + 1, 'ref' => $srid !== '' ? $srid : $awb, 'srid' => $srid, 'awb' => $awb, 'date' => $date, 'kind' => '', 'ok' => false, 'msg' => ''];
+        $created = $cols['created'] !== null ? sheet_date($cell($r, $cols['created'])) : null;
+        $line = ['row' => $i + 1, 'ref' => $srid !== '' ? $srid : $awb, 'srid' => $srid, 'awb' => $awb, 'date' => $date, 'delivered' => $date, 'created' => $created,
+                 'name' => $cell($r, $cols['name']), 'amount' => $cols['amount'] !== null ? num($cell($r, $cols['amount'])) : 0.0,
+                 'kind' => '', 'ok' => false, 'msg' => '', 'order_id' => null, 'suggest' => []];
 
         $why = dl_skip_reason($cols['status'], $statusText);
         if ($why !== '') {
@@ -262,7 +410,7 @@ function dl_process_rows(PDO $pdo, array $rows): array
             $results[] = $line;
             continue;
         }
-        $found = dl_find_order($pdo, $cands, $hasSr);
+        $found = dl_find_order($pdo, $cands, $hasSr, !$cols['header']);
         if (!$found) {
             if ($firstOrder !== '' && $date !== null && $date < $firstOrder) {
                 $counts['before']++;
@@ -273,6 +421,8 @@ function dl_process_rows(PDO $pdo, array $rows): array
             $counts['unmatched']++;
         } else {
             [$o, $by] = $found;
+            $used[(int)$o['id']] = true;
+            $line['order_id'] = (int)$o['id'];
             if (in_array($o['status'], ['created', 'dispatched'], true)) {
                 mark_delivered_on($pdo, (int)$o['id'], $date, $awb !== '' ? $awb : null);
                 $line['kind'] = 'ok';
@@ -291,5 +441,14 @@ function dl_process_rows(PDO $pdo, array $rows): array
         }
         $results[] = $line;
     }
-    return ['colInfo' => $cols['names'], 'results' => $results, 'counts' => $counts, 'firstOrder' => $firstOrder];
+    if ($counts['unmatched'] > 0) { // "maybe this order" for every unmatched row
+        $pool = dl_order_pool($pdo, $used);
+        foreach ($results as &$l) {
+            if ($l['kind'] === 'unmatched') {
+                $l['suggest'] = dl_suggest_orders($l, $pool);
+            }
+        }
+        unset($l);
+    }
+    return ['colInfo' => $cols['names'], 'results' => $results, 'counts' => $counts, 'firstOrder' => $firstOrder, 'usedOrders' => $used];
 }

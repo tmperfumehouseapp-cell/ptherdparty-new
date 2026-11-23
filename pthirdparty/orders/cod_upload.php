@@ -10,12 +10,30 @@ require_once __DIR__ . '/includes/cod_report_lib.php';
 require_once __DIR__ . '/includes/upload_ui_lib.php';
 $accounts = $pdo->query('SELECT id, name FROM accounts WHERE is_active = 1 ORDER BY name')->fetchAll();
 $codDefault = default_cod_account_id($pdo); // COD money normally comes into your own QR
-$results = null;
-$summary = null;
-$colInfo = '';
-$groups = [];
-$reasons = [];
+
+// "Use this order": write the report's Shiprocket Order ID on the chosen order, save the COD money of that row and mark it delivered (answers JSON)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'link') {
+    csrf_verify();
+    $ok = true;
+    try {
+        $acc = active_account_id($_POST['account_id'] ?? 0);
+        if (!$acc) {
+            throw new RuntimeException('Choose the account the money came into.');
+        }
+        $msg = cod_link_order($pdo, $user, (int)($_POST['order_id'] ?? 0), (string)($_POST['srid'] ?? ''), (string)($_POST['awb'] ?? ''), num($_POST['amount'] ?? 0),
+            valid_date((string)($_POST['remit'] ?? '')) ?? biz_today(), valid_date((string)($_POST['delivered'] ?? '')), (int)$acc);
+    } catch (RuntimeException $ex) {
+        $ok = false;
+        $msg = $ex->getMessage();
+    }
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['ok' => $ok, 'msg' => $msg], JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+$res = null;
 $withoutSr = null;
+$usedAcc = $codDefault;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
@@ -24,6 +42,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$accId) {
             throw new RuntimeException('Choose the account the money came into.');
         }
+        $usedAcc = (int)$accId;
         if (empty($_FILES['sheet']) || $_FILES['sheet']['error'] !== UPLOAD_ERR_OK) {
             throw new RuntimeException('Choose an Excel (.xls, .xlsx) or CSV file to upload.');
         }
@@ -31,21 +50,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$rows) {
             throw new RuntimeException('The file is empty.');
         }
-
         $res = cod_process_rows($pdo, $user, (int)$accId, $rows);
-        $colInfo = $res['colInfo'];
-        $results = $res['results'];
-        $groups = $res['groups'];
-        $okCount = $res['ok'];
-        $okSum = $res['sum'];
-        $notRemitted = $res['notRemitted'];
-        $delivCount = $res['delivered'];
-        $beforePanel = $res['beforePanel'];
-        $firstOrder = $res['firstOrder'];
-        $reasons = cod_reason_summary($results);
         $withoutSr = dl_orders_without_sr($pdo, 'cod_pending');
-        $unmatchedCount = count(array_filter($results, static fn($r) => ($r['kind'] ?? '') === 'unmatched'));
-        $summary = ['ok' => $okCount, 'sum' => $okSum, 'bad' => count($results) - $okCount, 'notRemitted' => $notRemitted, 'delivered' => $delivCount, 'before' => $beforePanel, 'firstOrder' => $firstOrder, 'unmatched' => $unmatchedCount];
     } catch (RuntimeException $ex) {
         flash('error', $ex->getMessage());
         redirect('cod_upload.php');
@@ -61,58 +67,69 @@ require __DIR__ . '/includes/header.php';
 <div class="grid">
   <section class="card wide">
     <h2>Result</h2>
-    <?php if ($results === null): ?>
-      <div class="empty">Choose a file on the right. The result of every row shows here.</div>
-    <?php elseif (!$results): ?>
-      <div class="empty">No rows found in the file.</div>
-    <?php else: ?>
-      <?php if ($colInfo !== ''): ?><p class="hint" style="margin:0 0 10px">Columns read from your file: <?= e($colInfo) ?></p><?php endif; ?>
-      <div class="stats" style="margin-bottom:14px">
-        <div class="stat"><div class="k">Saved</div><div class="v pos"><?= (int)$summary['ok'] ?></div></div>
-        <div class="stat"><div class="k">Money added</div><div class="v"><?= e(inr($summary['sum'])) ?></div></div>
-        <div class="stat"><div class="k">Unmatched</div><div class="v <?= $summary['unmatched'] ? 'neg' : '' ?>"><?= (int)$summary['unmatched'] ?></div><div class="mini">no order has this Shiprocket Order ID / AWB</div></div>
-        <div class="stat"><div class="k">Other skipped</div><div class="v"><?= (int)$summary['bad'] - (int)$summary['unmatched'] ?></div><div class="mini">prepaid, already received, amount too high...</div></div>
-        <?php if ($summary['delivered'] > 0): ?><div class="stat"><div class="k">Also marked delivered</div><div class="v"><?= (int)$summary['delivered'] ?></div></div><?php endif; ?>
-        <?php if ($summary['before'] > 0): ?><div class="stat"><div class="k">From before the panel</div><div class="v"><?= (int)$summary['before'] ?></div><div class="mini">delivered before your first order (<?= e(date('d M Y', strtotime($summary['firstOrder']))) ?>), so not panel orders</div></div><?php endif; ?>
-        <?php if ($summary['notRemitted'] > 0): ?><div class="stat"><div class="k">Not remitted yet</div><div class="v"><?= (int)$summary['notRemitted'] ?></div><div class="mini">no COD money in the file for these</div></div><?php endif; ?>
-      </div>
-      <?= ui_unmatched_table($results, true) ?>
+    <?php if ($res === null): ?>
+      <div class="empty">Drop the whole Shiprocket COD report on the right. You will see at once how much COD money was saved, which parcels are not found in the panel, and which COD orders have no Shiprocket Order ID.</div>
+    <?php else:
+        $results = $res['results'];
+        $kinds = array_count_values(array_column($results, 'kind'));
+        $saved = $res['ok'];
+        $already = $kinds['already'] ?? 0;
+        $unmatched = $kinds['unmatched'] ?? 0;
+        $needs = array_values(array_filter($results, static fn($r) => in_array($r['kind'], ['prepaid', 'pending', 'refunded', 'other'], true)));
+        $reasons = cod_reason_summary($needs);
+        $totalRows = count($results);
+    ?>
+      <?= ui_sentence('Your report has ' . $totalRows . ' parcel' . ($totalRows === 1 ? '' : 's') . ' in the panel period: ' . ($saved + $already) . ' COD saved ✓ (' . inr($res['sum']) . ' added now) · ' . $unmatched . ' not found in the panel ✗ · ' . count($needs) . ' need a look'
+          . ($res['beforePanel'] > 0 ? '. (' . $res['beforePanel'] . ' older parcels from before your first order are ignored.)' : '.')) ?>
+      <?= ui_big_numbers([
+          ['✅', 'COD money saved', $saved + $already, inr($res['sum']) . ' added now · ' . $already . ' were already saved before', 'good'],
+          ['❌', 'Not found in the panel', $unmatched, 'their Shiprocket Order ID is not on any order', $unmatched ? 'bad' : ''],
+          ['⚠️', 'Need a look', count($needs), 'prepaid, amount too high, refunded...', $needs ? 'warn' : ''],
+          ['📝', 'COD orders with no Shiprocket Order ID', $withoutSr === null ? 0 : $withoutSr['count'], 'still waiting for COD money, listed below', ($withoutSr !== null && $withoutSr['count']) ? 'warn' : ''],
+      ]) ?>
+      <p class="hint" style="margin:-6px 0 14px">
+        <?php if ($res['delivered'] > 0): ?><?= (int)$res['delivered'] ?> parcel<?= $res['delivered'] === 1 ? '' : 's' ?> also marked delivered. <?php endif; ?>
+        <?php if ($res['notRemitted'] > 0): ?><?= (int)$res['notRemitted'] ?> parcel<?= $res['notRemitted'] === 1 ? ' has' : 's have' ?> no COD money in the report yet. <?php endif; ?>
+      </p>
+      <?= ui_unmatched_table($results, 'cod', $usedAcc) ?>
       <?php if ($reasons): ?>
-      <h3 style="margin:0 0 8px">Why rows were skipped</h3>
+      <h3 style="margin:0 0 8px;color:#B45309">Need a look (<?= count($needs) ?>)</h3>
       <div class="table-wrap" style="margin-bottom:16px"><table class="tight" style="min-width:560px">
-        <thead><tr><th>Reason</th><th class="num">Rows</th><th>Examples (row · AWB / order ID · amount)</th></tr></thead>
+        <thead><tr><th>What is wrong</th><th class="num">Rows</th><th>Examples (row · Shiprocket Order ID · amount)</th></tr></thead>
         <tbody>
         <?php foreach ($reasons as $rs): ?>
           <tr><td><b><?= e($rs['label']) ?></b><?php if ($rs['hint'] !== ''): ?><div class="mini"><?= e($rs['hint']) ?></div><?php endif; ?></td>
-            <td class="num"><span class="tag tag-bad"><?= (int)$rs['n'] ?></span></td>
+            <td class="num"><span class="tag tag-warn"><?= (int)$rs['n'] ?></span></td>
             <td class="mini"><?php foreach ($rs['examples'] as $ex): ?><div><?= (int)$ex['row'] ?> · <?= e($ex['ref']) ?> · <?= e(inr($ex['amount'])) ?><?php if (strpos($rs['label'], 'more than') !== false): ?> · <?= e($ex['msg']) ?><?php endif; ?></div><?php endforeach; ?></td></tr>
         <?php endforeach; ?>
         </tbody>
       </table></div>
       <?php endif; ?>
-      <?php if (count($groups) > 1 || (count($groups) === 1 && key($groups) !== '-')): ?>
+      <?php if (count($res['groups']) > 1 || (count($res['groups']) === 1 && key($res['groups']) !== '-')): ?>
       <h3 style="margin:0 0 8px">By remittance (match these with your bank)</h3>
       <div class="table-wrap" style="margin-bottom:16px"><table class="tight" style="min-width:560px">
-        <thead><tr><th>CRF ID</th><th>UTR</th><th>Date</th><th class="num">Parcels</th><th class="num">Saved</th><th class="num">Skipped</th><th class="num">Money in file</th><th class="num">Money saved</th></tr></thead>
+        <thead><tr><th>CRF ID</th><th>UTR</th><th>Date</th><th class="num">Parcels</th><th class="num">Saved now</th><th class="num">Saved before</th><th class="num">Not saved</th><th class="num">Money in file</th><th class="num">Money saved now</th></tr></thead>
         <tbody>
-        <?php foreach ($groups as $g): ?>
+        <?php foreach ($res['groups'] as $g): ?>
           <tr><td><?= e($g['crf'] !== '' ? $g['crf'] : '-') ?></td><td><?= e($g['utr'] !== '' ? $g['utr'] : '-') ?></td><td><?= e(date('d M Y', strtotime($g['date']))) ?></td>
-            <td class="num"><?= (int)$g['rows'] ?></td><td class="num"><?= (int)$g['saved'] ?></td><td class="num"><?= $g['skipped'] ? '<span class="tag tag-bad">' . (int)$g['skipped'] . '</span>' : '0' ?></td>
+            <td class="num"><?= (int)$g['rows'] ?></td><td class="num"><?= (int)$g['saved'] ?></td><td class="num"><?= (int)$g['already'] ?></td>
+            <td class="num"><?= $g['skipped'] ? '<span class="tag tag-bad">' . (int)$g['skipped'] . '</span>' : '0' ?></td>
             <td class="num"><?= e(inr($g['in_file'])) ?></td><td class="num" style="font-weight:800"><?= e(inr($g['saved_amt'])) ?></td></tr>
         <?php endforeach; ?>
         </tbody>
       </table></div>
-      <h3 style="margin:0 0 8px">Every row</h3>
       <?php endif; ?>
+      <details<?= $totalRows <= 25 ? ' open' : '' ?>><summary class="btn btn-ghost btn-sm" style="display:inline-flex;cursor:pointer;margin-bottom:10px">Every row of the report (<?= $totalRows ?>)</summary>
       <div class="table-wrap"><table class="tight" style="min-width:480px">
         <thead><tr><th>Row</th><th>Shiprocket Order ID</th><th>AWB</th><th class="num">Amount</th><th>Result</th></tr></thead>
         <tbody>
-        <?php foreach ($results as $r): ?>
+        <?php $tagFor = ['ok' => ['tag-ok', 'Saved'], 'already' => ['tag-ok', 'Saved before'], 'unmatched' => ['tag-bad', 'Not found']]; ?>
+        <?php foreach ($results as $r): [$tc, $tl] = $tagFor[$r['kind']] ?? ['tag-warn', 'Need a look']; ?>
           <tr><td><?= (int)$r['row'] ?></td><td><?= e($r['srid'] !== '' ? $r['srid'] : '-') ?></td><td><?= e($r['awb'] !== '' ? $r['awb'] : '-') ?></td><td class="num"><?= e(inr($r['amount'])) ?></td>
-            <td><span class="tag <?= $r['ok'] ? 'tag-ok' : 'tag-bad' ?>"><?= $r['ok'] ? 'Saved' : 'Skipped' ?></span> <span class="mini"><?= e($r['msg']) ?></span></td></tr>
+            <td><span class="tag <?= e($tc) ?>"><?= e($tl) ?></span> <span class="mini"><?= e($r['msg']) ?></span></td></tr>
         <?php endforeach; ?>
         </tbody>
-      </table></div>
+      </table></div></details>
     <?php endif; ?>
   </section>
 
@@ -122,19 +139,24 @@ require __DIR__ . '/includes/header.php';
       <?= csrf_field() ?>
       <div class="field"><label for="account_id">Money came into</label>
         <select id="account_id" name="account_id" required>
-          <?php foreach ($accounts as $a): ?><option value="<?= (int)$a['id'] ?>"<?= (int)$a['id'] === $codDefault ? ' selected' : '' ?>><?= e($a['name']) ?></option><?php endforeach; ?>
+          <?php foreach ($accounts as $a): ?><option value="<?= (int)$a['id'] ?>"<?= (int)$a['id'] === $usedAcc ? ' selected' : '' ?>><?= e($a['name']) ?></option><?php endforeach; ?>
         </select></div>
-      <div class="field"><label for="sheet">Excel (.xls, .xlsx) or CSV file</label><input id="sheet" name="sheet" type="file" accept=".xls,.xlsx,.csv" required style="width:100%"></div>
+      <div class="field"><label for="sheet">Shiprocket COD report (.xls, .xlsx or .csv)</label><input id="sheet" name="sheet" type="file" accept=".xls,.xlsx,.csv" required style="width:100%"></div>
       <button class="btn btn-accent btn-block" type="submit">Upload and save</button>
     </form>
     <div class="sheet-note" style="margin-top:14px">
-      Upload <b>Shiprocket's COD report exactly as you download it</b> (.xls, .xlsx or .csv), no editing. Columns are found by their names:
-      <b>Order Id</b> (the Shiprocket Order ID you typed on New order: the main key to find the order), <b>AWB</b> (second key), <b>Order Value</b> / <b>Remitted Amount</b> (the COD money), <b>Remittance Date</b>, <b>CRF ID</b>, <b>UTR</b>, <b>Delivered Date</b>.
-      The COD <i>charge</i> column ("COD Payble Amount") is never used as money. Without a header row: A order number or tracking ID, B amount, C date.
-      Rows for orders that are not COD, already fully received, or more than pending are skipped and explained. A parcel still showing created / dispatched is marked delivered when its COD money is saved.
-      Uploading the same report again is safe: money already saved is not counted twice.
+      <b>How it works</b>
+      <ol style="margin:6px 0 0 18px;padding:0">
+        <li>Upload Shiprocket's COD report <b>exactly as you download it</b>. No editing.</li>
+        <li>The <b>Shiprocket Order ID</b> (the one you type on New order) is the key. The AWB is the second key. The panel's own numbers like #0081 are only a reference and are not used.</li>
+        <li>The COD money is the report's <b>Order Value</b> / <b>Remitted Amount</b>. The "COD Payble Amount" column is a charge and is never used as money.</li>
+        <li>A parcel whose COD money was already saved before counts as done, not as a problem. The parcel is also marked delivered.</li>
+        <li>A parcel that is <b>not found</b> is listed in red, with the orders it may belong to. Press <b>Use this order</b>: it writes the Shiprocket Order ID, saves the COD money and marks it delivered.</li>
+        <li>It is safe to upload the same report again: nothing is counted twice.</li>
+      </ol>
     </div>
   </section>
 </div>
-<?= ui_without_sr_card($withoutSr, 'COD orders with no Shiprocket Order ID saved', 'These COD orders are still waiting for their COD money and cannot be matched by the report. Open the order and type its Shiprocket Order ID.') ?>
+<?= ui_without_sr_card($withoutSr, 'COD orders with no Shiprocket Order ID', 'These COD orders are still waiting for their COD money and no report can match them. Open the order and type its Shiprocket Order ID.') ?>
+<?= ui_link_script() ?>
 <?php require __DIR__ . '/includes/footer.php'; ?>
