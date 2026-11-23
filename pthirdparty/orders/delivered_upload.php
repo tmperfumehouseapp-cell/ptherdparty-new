@@ -14,7 +14,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
     try {
         if (empty($_FILES['sheet']) || $_FILES['sheet']['error'] !== UPLOAD_ERR_OK) {
-            throw new RuntimeException('Choose an Excel (.xlsx) or CSV file to upload.');
+            throw new RuntimeException('Choose an Excel (.xls, .xlsx) or CSV file to upload.');
         }
         $rows = read_sheet_rows($_FILES['sheet']['tmp_name'], (string)$_FILES['sheet']['name']);
         if (!$rows) {
@@ -120,7 +120,7 @@ require __DIR__ . '/includes/header.php';
     <h2>Upload delivered list</h2>
     <form method="post" enctype="multipart/form-data" autocomplete="off">
       <?= csrf_field() ?>
-      <div class="field"><label for="sheet">Excel (.xlsx) or CSV file</label><input id="sheet" name="sheet" type="file" accept=".xlsx,.csv" required style="width:100%"></div>
+      <div class="field"><label for="sheet">Excel (.xls, .xlsx) or CSV file</label><input id="sheet" name="sheet" type="file" accept=".xls,.xlsx,.csv" required style="width:100%"></div>
       <button class="btn btn-accent btn-block" type="submit">Upload and mark delivered</button>
     </form>
     <div class="sheet-note" style="margin-top:14px">

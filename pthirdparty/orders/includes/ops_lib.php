@@ -385,7 +385,7 @@ function col_index(string $ref): int
     return $n - 1;
 }
 
-/** Reads the first sheet of an .xlsx or a .csv into rows of strings. Throws RuntimeException if unreadable. */
+/** Reads the first sheet of an .xls, .xlsx or .csv into rows of strings. Throws RuntimeException if unreadable. */
 function read_sheet_rows(string $path, string $originalName): array
 {
     $ext = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
@@ -407,8 +407,12 @@ function read_sheet_rows(string $path, string $originalName): array
         }
         return $rows;
     }
+    if ($ext === 'xls') { // old Excel format (also HTML / text saved with the .xls name)
+        require_once __DIR__ . '/xls_lib.php';
+        return xls_read_rows($path);
+    }
     if ($ext !== 'xlsx') {
-        throw new RuntimeException('Upload an .xlsx or .csv file.');
+        throw new RuntimeException('Upload an .xls, .xlsx or .csv file.');
     }
     if (!class_exists('ZipArchive')) {
         throw new RuntimeException('This server cannot read .xlsx. Save the sheet as .csv and upload that.');
