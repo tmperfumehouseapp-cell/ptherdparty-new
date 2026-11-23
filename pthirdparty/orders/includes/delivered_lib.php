@@ -95,9 +95,30 @@ function dl_detect_columns(array $rows): array
     ];
 }
 
+/** True when a table exists (cached). */
+function dl_has_table(PDO $pdo, string $t): bool
+{
+    static $c = [];
+    if (!isset($c[$t])) {
+        try {
+            $pdo->query('SELECT 1 FROM ' . $t . ' LIMIT 1');
+            $c[$t] = true;
+        } catch (Throwable $e) {
+            $c[$t] = false;
+        }
+    }
+    return $c[$t];
+}
+
 /**
  * Looks the candidate IDs up. Returns [order row (id, status), how it matched] or null.
- * Order of trust: tracking ID, Shiprocket Order ID, our own order number.
+ * Where an ID can be saved in the panel, all are checked, in this order of trust:
+ *   1. the tracking ID on the order (also when several AWBs are saved together like "AWB1, AWB2")
+ *   2. the AWB of a Shiprocket shipment booked by the panel (shipments table)
+ *   3. the Shiprocket Order ID on the order (also inside a list)
+ *   4. the Shiprocket order id of a shipment booked by the panel
+ *   5. our own order number (short numbers only)
+ * A long ID is only accepted when it points to ONE order.
  */
 function dl_find_order(PDO $pdo, array $candidates, bool $hasSr): ?array
 {
@@ -108,20 +129,58 @@ function dl_find_order(PDO $pdo, array $candidates, bool $hasSr): ?array
             $cands[] = $c;
         }
     }
-    $byTrack = $pdo->prepare("SELECT id, status FROM orders WHERE REPLACE(REPLACE(tracking_id, ' ', ''), CHAR(39), '') = ? ORDER BY id DESC LIMIT 1");
-    $bySr = $hasSr ? $pdo->prepare("SELECT id, status FROM orders WHERE REPLACE(shiprocket_order_id, ' ', '') = ? ORDER BY id DESC LIMIT 1") : null;
+    $hasShip = dl_has_table($pdo, 'shipments');
+    // "t" = the saved text without spaces and quotes. Exact match first; then one item of a comma / slash separated list.
+    $lookup = static function (string $col) use ($pdo): array {
+        $t = "REPLACE(REPLACE($col, ' ', ''), CHAR(39), '')";
+        return [
+            $pdo->prepare("SELECT id, status FROM orders WHERE $t = ? ORDER BY id DESC LIMIT 1"),
+            $pdo->prepare("SELECT id, status FROM orders WHERE $t LIKE ? OR $t LIKE ? OR $t LIKE ? ORDER BY id DESC LIMIT 2"),
+        ];
+    };
+    $find = static function (array $q, string $c): ?array {
+        $q[0]->execute([$c]);
+        if ($o = $q[0]->fetch()) {
+            return $o;
+        }
+        if (strlen($c) < 8) { // short IDs are never searched inside a list: too many false matches
+            return null;
+        }
+        $q[1]->execute([$c . ',%', '%,' . $c, '%,' . $c . ',%']);
+        $rows = $q[1]->fetchAll();
+        return count($rows) === 1 ? $rows[0] : null; // inside a list it must point to ONE order
+    };
+    $byTrack = $lookup('tracking_id');
+    $bySr = $hasSr ? $lookup('shiprocket_order_id') : null;
+    $byShipAwb = $hasShip ? $pdo->prepare("SELECT o.id, o.status FROM shipments s JOIN orders o ON o.id = s.order_id WHERE s.awb = ? ORDER BY s.id DESC LIMIT 1") : null;
+    $byShipOrder = $hasShip ? $pdo->prepare("SELECT o.id, o.status FROM shipments s JOIN orders o ON o.id = s.order_id WHERE s.sr_order_id = ? ORDER BY s.id DESC LIMIT 1") : null;
     $byId = $pdo->prepare('SELECT id, status FROM orders WHERE id = ?');
+
     foreach ($cands as $c) {
-        $byTrack->execute([$c]);
-        if ($o = $byTrack->fetch()) {
+        if ($o = $find($byTrack, $c)) {
             return [$o, 'tracking ID'];
+        }
+    }
+    if ($byShipAwb) {
+        foreach ($cands as $c) {
+            $byShipAwb->execute([$c]);
+            if ($o = $byShipAwb->fetch()) {
+                return [$o, 'AWB of the Shiprocket shipment'];
+            }
         }
     }
     if ($bySr) {
         foreach ($cands as $c) {
-            $bySr->execute([$c]);
-            if ($o = $bySr->fetch()) {
+            if ($o = $find($bySr, $c)) {
                 return [$o, 'Shiprocket order ID'];
+            }
+        }
+    }
+    if ($byShipOrder) {
+        foreach ($cands as $c) {
+            $byShipOrder->execute([$c]);
+            if ($o = $byShipOrder->fetch()) {
+                return [$o, 'Shiprocket order ID of the shipment'];
             }
         }
     }
