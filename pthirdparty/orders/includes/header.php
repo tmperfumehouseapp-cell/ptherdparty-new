@@ -16,6 +16,7 @@ $nav = [
     ['key' => 'products',   'label' => 'Products',    'href' => 'products.php',   'ready' => true,  'admin' => true],
     ['key' => 'accounts',   'label' => 'Accounts',    'href' => 'accounts.php',   'ready' => true,  'admin' => true],
     ['key' => 'numbers',    'label' => 'Numbers',     'href' => 'numbers.php',    'ready' => true,  'admin' => true],
+    ['key' => 'sr_settings', 'label' => 'Shiprocket', 'href' => 'shiprocket_settings.php', 'ready' => true, 'admin' => true],
     ['key' => 'wa_check',   'label' => 'WhatsApp',    'href' => 'wa_admin.php',   'ready' => true,  'admin' => true],
     ['key' => 'groups',     'label' => 'Groups',      'href' => 'groups.php',     'ready' => true,  'admin' => true],
     ['key' => 'users',      'label' => 'Team',        'href' => 'users.php',      'ready' => true,  'admin' => true],
