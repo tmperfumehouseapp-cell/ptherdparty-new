@@ -53,9 +53,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $date = $cols['date'] !== null ? sheet_date((string)($r[$cols['date']] ?? '')) : null;
             $line = ['row' => $i + 1, 'ref' => $shown, 'ok' => false, 'msg' => ''];
 
-            // every row of a delivered list counts as delivered; only a status that clearly says it did not arrive is skipped
-            if (dl_bad_status($statusText)) {
-                $line['msg'] = 'Status is "' . $statusText . '", so it was not marked delivered.';
+            // with a Status column only "Delivered" rows count; without one every row of the list is delivered
+            $why = dl_skip_reason($cols['status'], $statusText);
+            if ($why !== '') {
+                $line['msg'] = $why;
                 $results[] = $line;
                 continue;
             }
@@ -123,9 +124,10 @@ require __DIR__ . '/includes/header.php';
       <button class="btn btn-accent btn-block" type="submit">Upload and mark delivered</button>
     </form>
     <div class="sheet-note" style="margin-top:14px">
-      Every row of the file is marked <b>delivered</b>. Each row is matched by its <b>tracking ID / AWB</b>, its <b>Shiprocket Order ID</b>, or our <b>order number</b>, whichever column your file has.
-      Only a row whose Status clearly says RTO, return, cancelled, undelivered or lost is skipped. Header names are read automatically; without a header: A order number, B tracking ID, C status, D date.
-      Orders already delivered, returned or refunded are skipped. A tracking ID is saved on the order if it has none. The result below shows how each row matched.
+      Upload the <b>Shiprocket report exactly as you download it</b> (Excel or CSV), no editing. The columns are found by their names: <b>Order ID</b>, <b>AWB Code</b>, <b>Status</b>, <b>Order Delivered Date</b>.
+      Each row is matched by its <b>AWB</b>, its <b>Shiprocket Order ID</b>, or our <b>order number</b>. Only rows whose Status says <b>DELIVERED</b> are marked delivered; NEW ORDER, IN TRANSIT, CANCELED, RTO and the rest are left as they are.
+      A file with no Status column counts every row as delivered. Without a header row: A order number, B tracking ID (either way round works), C status, D date.
+      Orders already delivered, returned or refunded are skipped. A tracking ID is saved on the order if it has none. The result below shows the columns it read and how each row matched.
     </div>
   </section>
 </div>
