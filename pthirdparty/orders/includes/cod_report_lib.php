@@ -107,16 +107,24 @@ function cod_process_rows(PDO $pdo, array $user, int $accId, array $rows): array
     for ($i = $cols['start']; $i < count($rows); $i++) {
         $r = $rows[$i];
         $cands = [];
-        foreach (array_merge($cols['track'], $cols['order']) as $c) { // AWB first, then every order-ID column
+        foreach (array_merge($cols['order'], $cols['track']) as $c) { // the Shiprocket Order ID is the main key; the AWB is the second
             $cands[] = (string)($r[$c] ?? '');
         }
-        $ref = '';
-        foreach ($cands as $c) {
-            if (dl_norm($c) !== '') {
-                $ref = dl_norm($c);
+        $srid = '';
+        foreach ($cols['order'] as $c) {
+            if (dl_norm((string)($r[$c] ?? '')) !== '') {
+                $srid = dl_norm((string)$r[$c]);
                 break;
             }
         }
+        $awb = '';
+        foreach ($cols['track'] as $c) {
+            if (dl_norm((string)($r[$c] ?? '')) !== '') {
+                $awb = dl_norm((string)$r[$c]);
+                break;
+            }
+        }
+        $ref = $srid !== '' ? $srid : $awb;
         $amt = $cols['amount'] !== null ? num($cell($r, $cols['amount'])) : 0.0;
         if ($ref === '' && $amt == 0) {
             continue;
@@ -127,8 +135,8 @@ function cod_process_rows(PDO $pdo, array $user, int $accId, array $rows): array
             continue;
         }
         $date = sheet_date($remitText) ?? biz_today();
-        $line = ['row' => $i + 1, 'ref' => $ref, 'amount' => $amt, 'date' => $date, 'crf' => dl_norm($cell($r, $cols['crf'])),
-                 'utr' => $cell($r, $cols['utr']), 'ok' => false, 'msg' => ''];
+        $line = ['row' => $i + 1, 'ref' => $ref, 'srid' => $srid, 'awb' => $awb, 'amount' => $amt, 'date' => $date, 'delivered' => sheet_date($cell($r, $cols['delivered'])),
+                 'crf' => dl_norm($cell($r, $cols['crf'])), 'utr' => $cell($r, $cols['utr']), 'ok' => false, 'msg' => '', 'kind' => ''];
 
         $found = $ref !== '' ? dl_find_order($pdo, $cands, $hasSr) : null;
         if (!$found) {
@@ -137,6 +145,7 @@ function cod_process_rows(PDO $pdo, array $user, int $accId, array $rows): array
                 $beforePanel++;
                 continue;
             }
+            $line['kind'] = 'unmatched';
             $line['msg'] = 'No order with this AWB, Shiprocket order ID or order number.';
         } else {
             [$o, $by] = $found;
@@ -144,6 +153,7 @@ function cod_process_rows(PDO $pdo, array $user, int $accId, array $rows): array
             try {
                 add_cod_receipt($pdo, $user, $orderId, $amt, $accId, $date, 'excel');
                 $line['ok'] = true;
+                $line['kind'] = 'ok';
                 $line['msg'] = 'Saved for order ' . order_no($orderId) . ' (matched by ' . $by . ')';
                 $okCount++;
                 $okSum += $amt;
@@ -164,6 +174,7 @@ function cod_process_rows(PDO $pdo, array $user, int $accId, array $rows): array
                 }
             } catch (RuntimeException $ex) {
                 $line['msg'] = $ex->getMessage();
+                $line['kind'] = cod_reason_key($line['msg']);
             }
         }
         $results[] = $line;
@@ -189,11 +200,7 @@ function cod_reason_summary(array $results): array
             continue;
         }
         $m = (string)$r['msg'];
-        $k = preg_match('/^No order/', $m) ? 'not_found'
-            : (strpos($m, 'is prepaid') !== false ? 'prepaid'
-            : (strpos($m, 'fully received') !== false || strpos($m, 'already recorded') !== false ? 'received'
-            : (strpos($m, 'pending, you entered') !== false ? 'pending'
-            : (strpos($m, 'is refunded') !== false ? 'refunded' : 'other'))));
+        $k = cod_reason_key($m);
         if (!isset($out[$k])) {
             $out[$k] = ['label' => $cat[$k][0], 'hint' => $cat[$k][1], 'n' => 0, 'examples' => []];
         }
@@ -204,4 +211,14 @@ function cod_reason_summary(array $results): array
     }
     uasort($out, static fn($a, $b) => $b['n'] <=> $a['n']);
     return $out;
+}
+
+/** Which kind of skip a message from the COD save is. */
+function cod_reason_key(string $m): string
+{
+    return preg_match('/^No order/', $m) ? 'not_found'
+        : (strpos($m, 'is prepaid') !== false ? 'prepaid'
+        : (strpos($m, 'fully received') !== false || strpos($m, 'already recorded') !== false ? 'received'
+        : (strpos($m, 'pending, you entered') !== false ? 'pending'
+        : (strpos($m, 'is refunded') !== false ? 'refunded' : 'other'))));
 }
