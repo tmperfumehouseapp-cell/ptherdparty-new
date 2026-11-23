@@ -227,6 +227,8 @@ function sr_poll_orders(PDO $pdo, int $maxOrders = 15, int $minMinutes = 20, int
         $last = '';
         $when = null;
         $failed = false;
+        $evDate = '';
+        $shipDate = '';
         foreach ($awbs as $awb) {
             try {
                 $d = sr_call($pdo, 'GET', '/courier/track/awb/' . rawurlencode($awb));
@@ -242,6 +244,14 @@ function sr_poll_orders(PDO $pdo, int $maxOrders = 15, int $minMinutes = 20, int
                 $cs = 'CANCELED'; // Shiprocket: "This AWB has been cancelled."
             }
             $last = $cs !== '' ? $cs : $last;
+            $act = $td['shipment_track_activities'][0]['date'] ?? ($td['shipment_track'][0]['updated_time_stamp'] ?? '');
+            if ((string)$act !== '' && strtotime((string)$act) && (string)$evDate < date('Y-m-d', strtotime((string)$act))) {
+                $evDate = date('Y-m-d', strtotime((string)$act)); // when Shiprocket's newest scan happened
+            }
+            $pk = (string)($td['shipment_track'][0]['pickup_date'] ?? '');
+            if ($pk !== '' && strtotime($pk) && $shipDate === '') {
+                $shipDate = date('Y-m-d', strtotime($pk));
+            }
             if (sr_is_delivered($cs, $td['shipment_status'] ?? null)) {
                 $dd = (string)($td['shipment_track'][0]['delivered_date'] ?? '');
                 $when = $dd !== '' && strtotime($dd) ? date('Y-m-d', strtotime($dd)) : $when;
@@ -254,7 +264,7 @@ function sr_poll_orders(PDO $pdo, int $maxOrders = 15, int $minMinutes = 20, int
         }
         $r['checked']++;
         $mark->execute([(int)$o['id'], mb_substr($last !== '' ? $last : '-', 0, 120)]);
-        srs_save($pdo, (int)$o['id'], ['status' => $last, 'awb' => $awbs[0], 'delivered_on' => $allDelivered ? ($when ?? date('Y-m-d')) : '', 'source' => 'sync']);
+        srs_save($pdo, (int)$o['id'], ['status' => $last, 'awb' => $awbs[0], 'delivered_on' => $allDelivered ? ($when ?? date('Y-m-d')) : '', 'status_date' => $evDate, 'shipped_on' => $shipDate, 'source' => 'sync']);
         if ($allDelivered) {
             if (mark_delivered_on($pdo, (int)$o['id'], $when ?? date('Y-m-d'), null)) {
                 $r['delivered']++;
@@ -475,7 +485,7 @@ function sr_webhook_handle(PDO $pdo, array $payload): array
     if ($found && $status !== '') { // the parcel status is kept on the order for the tags on the Orders page
         require_once __DIR__ . '/order_tags_lib.php';
         srs_ensure($pdo);
-        srs_save($pdo, (int)$found[0]['id'], ['status' => $status, 'awb' => $awb, 'source' => 'webhook']);
+        srs_save($pdo, (int)$found[0]['id'], ['status' => $status, 'awb' => $awb, 'source' => 'webhook', 'status_date' => $when !== '' && strtotime($when) ? date('Y-m-d', strtotime($when)) : '']);
     }
     if (!sr_is_delivered($status, $code)) {
         return ['awb' => $awb, 'status' => $status, 'result' => $found ? 'status saved on ' . order_no($found[0]['id']) . ' (not delivered)' : 'logged (status is not delivered)'];

@@ -33,9 +33,16 @@ function srs_ensure(PDO $pdo): void
                 remit_date DATE NULL,
                 remit_amount DECIMAL(12,2) NULL,
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                source VARCHAR(20) NULL
+                source VARCHAR(20) NULL,
+                status_date DATE NULL,
+                shipped_on DATE NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
         );
+        foreach (['status_date', 'shipped_on'] as $col) { // tables made by the first version get the date columns
+            if (!$pdo->query("SHOW COLUMNS FROM sr_status LIKE '$col'")->fetch()) {
+                $pdo->exec("ALTER TABLE sr_status ADD COLUMN $col DATE NULL");
+            }
+        }
     } catch (PDOException $e) {
         throw new RuntimeException('Could not prepare the Shiprocket status table.');
     }
@@ -51,7 +58,9 @@ function srs_clean($v): string
 
 /**
  * Saves what Shiprocket says about one order. Empty values never overwrite what is already saved (a report without the COD columns must not erase them),
- * but the status always follows the latest information. $d: status, pay, awb, delivered_on (Y-m-d), crf, utr, remit_date (Y-m-d), remit_amount, source.
+ * but the status always follows the latest information. $d: status, pay, awb, delivered_on (Y-m-d), crf, utr, remit_date (Y-m-d), remit_amount, source,
+ * status_date (the date of Shiprocket's latest event for the parcel) and shipped_on (the day it was picked up / shipped).
+ * status_date only ever moves forward, so a parcel delivered on the 20th keeps saying the 20th however often it is checked later.
  */
 function srs_save(PDO $pdo, int $orderId, array $d): void
 {
@@ -62,7 +71,7 @@ function srs_save(PDO $pdo, int $orderId, array $d): void
             $clean[$k] = mb_substr($k === 'pay' ? strtolower($v) : $v, 0, $k === 'utr' ? 80 : 100);
         }
     }
-    foreach (['delivered_on', 'remit_date'] as $k) {
+    foreach (['delivered_on', 'remit_date', 'status_date', 'shipped_on'] as $k) {
         $v = srs_clean($d[$k] ?? '');
         if ($v !== '' && strtotime($v)) {
             $clean[$k] = date('Y-m-d', strtotime($v));
@@ -75,9 +84,20 @@ function srs_save(PDO $pdo, int $orderId, array $d): void
     if (!$clean) {
         return;
     }
-    $st = $pdo->prepare('SELECT order_id FROM sr_status WHERE order_id = ?');
+    $st = $pdo->prepare('SELECT status, status_date FROM sr_status WHERE order_id = ?');
     $st->execute([$orderId]);
-    if ($st->fetchColumn() !== false) {
+    $old = $st->fetch();
+    if (isset($clean['delivered_on']) && !isset($clean['status_date'])) {
+        $clean['status_date'] = $clean['delivered_on'];
+    }
+    if ($old !== false) {
+        // a status that changed while we were watching, with no event date from Shiprocket: it changed today
+        if (!isset($clean['status_date']) && isset($clean['status']) && trim((string)$old['status']) !== '' && strcasecmp(trim((string)$old['status']), $clean['status']) !== 0) {
+            $clean['status_date'] = date('Y-m-d');
+        }
+        if (isset($clean['status_date']) && (string)$old['status_date'] !== '' && (string)$old['status_date'] > $clean['status_date']) {
+            unset($clean['status_date']); // never move the date backwards
+        }
         $set = [];
         foreach (array_keys($clean) as $k) {
             $set[] = "$k = ?";
@@ -89,6 +109,41 @@ function srs_save(PDO $pdo, int $orderId, array $d): void
         $clean['updated_at'] = date('Y-m-d H:i:s');
         $pdo->prepare('INSERT INTO sr_status (' . implode(',', array_keys($clean)) . ') VALUES (' . implode(',', array_fill(0, count($clean), '?')) . ')')->execute(array_values($clean));
     }
+}
+
+/**
+ * The small line under the tags of one order: when Shiprocket last said something, and for a parcel on its way how many days it has been on the way.
+ * $r needs: status, delivered_at, sr_status, sr_date (last Shiprocket event), sr_shipped (picked up / shipped day). Returns ['text', 'late'] or null.
+ */
+function order_tag_dates(array $r, ?string $today = null): ?array
+{
+    $today = $today ?? date('Y-m-d');
+    $days = static fn(string $from) => (int)floor((strtotime($today) - strtotime($from)) / 86400);
+    $nice = static fn(string $d) => date('d M', strtotime($d));
+    $ago = static fn(int $n) => $n <= 0 ? 'today' : ($n === 1 ? 'yesterday' : $n . ' days ago');
+    $st = (string)$r['status'];
+    $last = trim((string)($r['sr_date'] ?? ''));
+    $ship = trim((string)($r['sr_shipped'] ?? ''));
+    if ($st === 'delivered') {
+        $dd = substr((string)($r['delivered_at'] ?? ''), 0, 10);
+        return $dd !== '' && strtotime($dd) ? ['text' => 'Delivered ' . $nice($dd), 'late' => false] : null;
+    }
+    if (!in_array($st, ['created', 'dispatched'], true)) {
+        return null;
+    }
+    $parts = [];
+    $late = false;
+    if ($last !== '' && strtotime($last)) {
+        $parts[] = 'Last update ' . $nice($last) . ' (' . $ago($days($last)) . ')';
+    }
+    $srs = strtolower((string)($r['sr_status'] ?? ''));
+    $moving = $srs !== '' && strpos($srs, 'new order') === false && strpos($srs, 'cancel') === false;
+    if ($moving && $ship !== '' && strtotime($ship)) {
+        $n = max(0, $days($ship));
+        $parts[] = 'on the way ' . $n . ' day' . ($n === 1 ? '' : 's') . ' (since ' . $nice($ship) . ')';
+        $late = $n >= 7;
+    }
+    return $parts ? ['text' => implode(' · ', $parts), 'late' => $late] : null;
 }
 
 /* ---------- the rules as SQL (alias o = orders) ---------- */
