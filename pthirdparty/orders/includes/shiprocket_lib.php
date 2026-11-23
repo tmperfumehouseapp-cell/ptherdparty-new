@@ -10,6 +10,16 @@ class SrError extends RuntimeException
 function sr_cfg(string $k, $default = null)
 {
     global $config;
+    if (isset($config[$k]) && $config[$k] !== '') {
+        return $config[$k];
+    }
+    if ($k === 'shiprocket_email' || $k === 'shiprocket_password') { // saved on the panel's Shiprocket settings page (the password is stored encrypted)
+        require_once __DIR__ . '/sr_connect_lib.php';
+        $v = sr_saved_cred($k);
+        if ($v !== null && $v !== '') {
+            return $v;
+        }
+    }
     return $config[$k] ?? $default;
 }
 
@@ -38,20 +48,41 @@ function sr_ready(PDO $pdo): bool
     return $ok;
 }
 
+function sr_state_ensure(PDO $pdo): void
+{
+    try {
+        $pdo->exec('CREATE TABLE IF NOT EXISTS shiprocket_state (k VARCHAR(60) NOT NULL PRIMARY KEY, v TEXT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4');
+    } catch (Throwable $e) {
+        // leave it: the caller will fail with the real reason
+    }
+}
+
 function sr_state_get(PDO $pdo, string $k): ?string
 {
-    $st = $pdo->prepare('SELECT v FROM shiprocket_state WHERE k = ?');
-    $st->execute([$k]);
+    try {
+        $st = $pdo->prepare('SELECT v FROM shiprocket_state WHERE k = ?');
+        $st->execute([$k]);
+    } catch (PDOException $e) {
+        sr_state_ensure($pdo); // the table was never made: make it and read again
+        $st = $pdo->prepare('SELECT v FROM shiprocket_state WHERE k = ?');
+        $st->execute([$k]);
+    }
     $v = $st->fetchColumn();
     return $v === false ? null : (string)$v;
 }
 
 function sr_state_set(PDO $pdo, string $k, string $v): void
 {
-    $pdo->prepare('INSERT INTO shiprocket_state (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = VALUES(v)')->execute([$k, $v]);
+    try {
+        $pdo->prepare('INSERT INTO shiprocket_state (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = VALUES(v)')->execute([$k, $v]);
+    } catch (PDOException $e) {
+        sr_state_ensure($pdo);
+        $pdo->prepare('INSERT INTO shiprocket_state (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = VALUES(v)')->execute([$k, $v]);
+    }
 }
 
 /** One HTTP call. Returns [httpCode, decodedJson|null]. Throws SrError (retry = true) when the network fails. */
+if (!function_exists('sr_http')) { // (a test can define its own before this file is loaded)
 function sr_http(string $method, string $url, ?array $body, ?string $token): array
 {
     $ch = curl_init($url);
@@ -80,6 +111,7 @@ function sr_http(string $method, string $url, ?array $body, ?string $token): arr
     }
     $d = json_decode((string)$raw, true);
     return [$code, is_array($d) ? $d : null];
+}
 }
 
 function sr_error_text(?array $d, int $code): string
