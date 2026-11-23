@@ -97,6 +97,8 @@ function cod_group_results(array $results): array
  */
 function cod_process_rows(PDO $pdo, array $user, int $accId, array $rows): array
 {
+    require_once __DIR__ . '/order_tags_lib.php';
+    srs_ensure($pdo); // (outside any transaction)
     $cols = cod_detect_columns($rows);
     $colInfo = $cols['names'];
     $hasSr = orders_has_sr_id($pdo);
@@ -158,6 +160,9 @@ function cod_process_rows(PDO $pdo, array $user, int $accId, array $rows): array
             $orderId = (int)$o['id'];
             $used[$orderId] = true;
             $line['order_id'] = $orderId;
+            // Shiprocket has remitted this parcel's COD: remember the CRF / UTR / date so the Orders page can tag it
+            srs_save($pdo, $orderId, ['status' => $cell($r, $cols['status']), 'awb' => $awb, 'delivered_on' => $cell($r, $cols['delivered']), 'crf' => $line['crf'], 'utr' => $line['utr'],
+                'remit_date' => $remitText, 'remit_amount' => $amt, 'pay' => 'cod', 'source' => 'cod report']);
             try {
                 add_cod_receipt($pdo, $user, $orderId, $amt, $accId, $date, 'excel');
                 $line['ok'] = true;

@@ -201,7 +201,9 @@ function sr_is_delivered($statusText, $statusCode = null): bool
 function sr_poll_orders(PDO $pdo, int $maxOrders = 15, int $minMinutes = 20, int $budgetSeconds = 35): array
 {
     require_once __DIR__ . '/ops_lib.php';
+    require_once __DIR__ . '/order_tags_lib.php';
     sr_conn_ensure($pdo);
+    srs_ensure($pdo);
     $r = ['checked' => 0, 'delivered' => 0, 'errors' => 0, 'first_error' => ''];
     $start = time();
     $st = $pdo->prepare(
@@ -249,6 +251,7 @@ function sr_poll_orders(PDO $pdo, int $maxOrders = 15, int $minMinutes = 20, int
         }
         $r['checked']++;
         $mark->execute([(int)$o['id'], mb_substr($last !== '' ? $last : '-', 0, 120)]);
+        srs_save($pdo, (int)$o['id'], ['status' => $last, 'awb' => $awbs[0], 'delivered_on' => $allDelivered ? ($when ?? date('Y-m-d')) : '', 'source' => 'sync']);
         if ($allDelivered) {
             if (mark_delivered_on($pdo, (int)$o['id'], $when ?? date('Y-m-d'), null)) {
                 $r['delivered']++;
@@ -376,11 +379,16 @@ function sr_webhook_handle(PDO $pdo, array $payload): array
     $code = sr_deep_find($payload, ['shipment_status_id', 'status_id']);
     $oid = (string)(sr_deep_find($payload, ['sr_order_id', 'channel_order_id', 'order_id']) ?? '');
     $when = (string)(sr_deep_find($payload, ['delivered_date', 'delivered_at', 'current_timestamp', 'scan_date']) ?? '');
-    if (!sr_is_delivered($status, $code)) {
-        return ['awb' => $awb, 'status' => $status, 'result' => 'logged (status is not delivered)'];
-    }
     $hasSr = function_exists('orders_has_sr_id') ? orders_has_sr_id($pdo) : true;
-    $found = dl_find_order($pdo, [$awb, $oid], $hasSr, false);
+    $found = ($awb !== '' || $oid !== '') ? dl_find_order($pdo, [$awb, $oid], $hasSr, false) : null;
+    if ($found && $status !== '') { // the parcel status is kept on the order for the tags on the Orders page
+        require_once __DIR__ . '/order_tags_lib.php';
+        srs_ensure($pdo);
+        srs_save($pdo, (int)$found[0]['id'], ['status' => $status, 'awb' => $awb, 'source' => 'webhook']);
+    }
+    if (!sr_is_delivered($status, $code)) {
+        return ['awb' => $awb, 'status' => $status, 'result' => $found ? 'status saved on ' . order_no($found[0]['id']) . ' (not delivered)' : 'logged (status is not delivered)'];
+    }
     if (!$found) {
         return ['awb' => $awb, 'status' => $status, 'result' => 'delivered, but no order matches this AWB / order id'];
     }

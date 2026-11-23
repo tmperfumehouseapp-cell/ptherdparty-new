@@ -95,19 +95,25 @@ function dl_detect_columns(array $rows): array
         'amount'  => $pick(['order total', 'order value', 'cod amount', 'amount']),
         'created' => $pick(['channel created at', 'order date', 'created at', 'order created date', 'shiprocket created at']),
         'pay'     => $pick(['payment method', 'payment mode', 'order type']),
+        // COD facts of the report (saved on the order so the Orders page can show "COD initiated / remitted")
+        'crf'        => $pick(['crf id', 'crf']),
+        'utr'        => $pick(['utr no', 'utr', 'utr number']),
+        'remit_date' => $pick(['cod remittance date', 'remittance date']),
+        'remit_amt'  => $pick(['remitted amount']),
     ];
     $label = static function (array $cols) use ($rows): string {
         return implode(', ', array_map(static fn($c) => 'column ' . dl_col_letter($c) . ' "' . trim(str_replace("\xEF\xBB\xBF", '', (string)($rows[0][$c] ?? ''))) . '"', $cols)) ?: 'none';
     };
     if (!$order && !$track) { // no header row: A order number, B tracking ID, C status, D date (the IDs are matched whichever way round they are)
         return ['start' => 0, 'order' => [0], 'track' => [1], 'status' => 2, 'date' => 3, 'header' => false,
-                'name' => null, 'amount' => null, 'created' => null, 'pay' => null,
+                'name' => null, 'amount' => null, 'created' => null, 'pay' => null, 'crf' => null, 'utr' => null, 'remit_date' => null, 'remit_amt' => null,
                 'names' => 'no header row found, so: column A = order number, column B = tracking ID, column C = status, column D = date'];
     }
     return [
         'start'  => 1, 'header' => true,
         'order'  => $order, 'track' => $track, 'status' => $status, 'date' => $date,
         'name' => $extra['name'], 'amount' => $extra['amount'], 'created' => $extra['created'], 'pay' => $extra['pay'],
+        'crf' => $extra['crf'], 'utr' => $extra['utr'], 'remit_date' => $extra['remit_date'], 'remit_amt' => $extra['remit_amt'],
         'names'  => 'Order ID: ' . $label($order) . ' | Tracking / AWB: ' . $label($track)
                   . ' | Status: ' . ($status !== null ? $label([$status]) : 'none (every row counts as delivered)')
                   . ' | Delivered date: ' . ($date !== null ? $label([$date]) : 'none'),
@@ -368,6 +374,8 @@ function dl_link_order(PDO $pdo, int $orderId, string $srid, string $awb, ?strin
  */
 function dl_process_rows(PDO $pdo, array $rows): array
 {
+    require_once __DIR__ . '/order_tags_lib.php';
+    srs_ensure($pdo); // (outside any transaction)
     $cols = dl_detect_columns($rows);
     $hasSr = function_exists('orders_has_sr_id') ? orders_has_sr_id($pdo) : false;
     $firstOrder = (string)$pdo->query('SELECT MIN(order_date) FROM orders')->fetchColumn();
@@ -402,6 +410,16 @@ function dl_process_rows(PDO $pdo, array $rows): array
                  'name' => $cell($r, $cols['name']), 'amount' => $cols['amount'] !== null ? num($cell($r, $cols['amount'])) : 0.0,
                  'kind' => '', 'ok' => false, 'msg' => '', 'order_id' => null, 'suggest' => []];
 
+        $found = dl_find_order($pdo, $cands, $hasSr, !$cols['header']);
+        if ($found) { // what Shiprocket says about this parcel is saved on the order (status, COD remittance) for the tags on the Orders page
+            $used[(int)$found[0]['id']] = true;
+            srs_save($pdo, (int)$found[0]['id'], [
+                'status' => $statusText, 'pay' => $cell($r, $cols['pay']), 'awb' => $awb, 'delivered_on' => $date,
+                'crf' => $cell($r, $cols['crf']), 'utr' => $cell($r, $cols['utr']), 'remit_date' => $cell($r, $cols['remit_date']),
+                'remit_amount' => $cell($r, $cols['remit_amt']), 'source' => 'report',
+            ]);
+            $line['order_id'] = (int)$found[0]['id'];
+        }
         $why = dl_skip_reason($cols['status'], $statusText);
         if ($why !== '') {
             $line['kind'] = 'status';
@@ -410,7 +428,6 @@ function dl_process_rows(PDO $pdo, array $rows): array
             $results[] = $line;
             continue;
         }
-        $found = dl_find_order($pdo, $cands, $hasSr, !$cols['header']);
         if (!$found) {
             if ($firstOrder !== '' && $date !== null && $date < $firstOrder) {
                 $counts['before']++;
