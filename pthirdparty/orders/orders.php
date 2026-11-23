@@ -359,7 +359,7 @@ $buyDay = $from !== '' && $to !== '' && $from === $to ? date('d M Y', strtotime(
       <a class="btn btn-sm linkbtn <?= $tag === $k ? 'btn-accent' : 'btn-ghost' ?>" href="orders.php?tag=<?= e($k) ?>"><?= e($tf[$k]) ?> <b><?= (int)$tc[$k] ?></b></a>
     <?php endforeach; ?>
   </div>
-  <?php if ($tc['total'] - $tc['with_sr'] > 0): ?><div class="hint" style="margin-top:6px"><?= (int)($tc['total'] - $tc['with_sr']) ?> orders have no Shiprocket information yet. Upload Shiprocket's all-orders report once on <a href="delivered_upload.php">Upload delivered CSV</a>: it fills the tags, and the automatic sync keeps open orders fresh.</div><?php endif; ?>
+  <?php if ($tc['total'] - $tc['with_sr'] > 0): ?><div class="hint" style="margin-top:6px"><?= (int)($tc['total'] - $tc['with_sr']) ?> orders have no Shiprocket information yet. <a href="diagnose.php"><b>Diagnose why</b></a>. Upload Shiprocket's all-orders report once on <a href="delivered_upload.php">Upload delivered CSV</a>: it fills the tags, and the automatic sync keeps open orders fresh.</div><?php endif; ?>
 </div>
 <?php endif; ?>
 <?php if ($chkReady): ?>
@@ -424,7 +424,7 @@ $ckr = $ck->fetch();
     <?php if ($kind !== ''): ?><input type="hidden" name="kind" value="<?= e($kind) ?>"><?php endif; ?>
     <button class="btn" type="submit">Filter</button>
     <a class="btn btn-ghost linkbtn" href="orders.php<?= $mode !== '' ? '?mode=' . e($mode) : '' ?>">Clear</a>
-    <?php if ($isAdmin): ?><a class="btn btn-ghost linkbtn" href="delivered_upload.php">Upload delivered CSV</a>
+    <?php if ($isAdmin): ?><a class="btn btn-accent linkbtn" href="diagnose.php">Diagnose</a> <a class="btn btn-ghost linkbtn" href="delivered_upload.php">Upload delivered CSV</a>
     <a class="btn btn-ghost linkbtn" href="cod_upload.php">Upload COD from Excel</a><?php endif; ?>
   </form>
 
