@@ -6,6 +6,7 @@ require_once __DIR__ . '/includes/orders_lib.php';
 require_once __DIR__ . '/includes/simple_lib.php';
 require_once __DIR__ . '/includes/order_check_lib.php';
 require_once __DIR__ . '/includes/refund_ui_lib.php';
+require_once __DIR__ . '/includes/order_tags_lib.php';
 $user = require_login();
 $pdo = db();
 $isAdmin = $user['role'] === 'admin';
@@ -59,6 +60,20 @@ if ($isAdmin && $_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action
 
 // daily check (manager): Verify an order, then mark its dealer Bill done
 $chkReady = $isAdmin && order_check_ready($pdo);
+// small status tags (manager): where each parcel is and where its COD money is (see includes/order_tags_lib.php)
+$tagsOk = false;
+if ($isAdmin) {
+    try {
+        srs_ensure($pdo);
+        $tagsOk = true;
+    } catch (Throwable $e) {
+        $tagsOk = false;
+    }
+}
+$tag = (string)($_GET['tag'] ?? '');
+if (!$tagsOk || order_tag_sql($tag) === null) {
+    $tag = '';
+}
 if ($isAdmin && $_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'check') {
     csrf_verify();
     $ckOk = true;
@@ -125,6 +140,9 @@ if ($chk === 'unverified') {
     $where[] = 'o.verified_at IS NOT NULL AND o.billed_at IS NULL';
 } elseif ($chk === 'billed') {
     $where[] = 'o.billed_at IS NOT NULL';
+}
+if ($tag !== '') {
+    $where[] = order_tag_sql($tag);
 }
 // Prepaid Orders = money taken at order time: fully prepaid orders, and COD orders that carried an advance.
 // COD Orders = the COD part only (total minus advance). A partial prepaid order is in both, but each tab counts only its own part.
@@ -225,7 +243,9 @@ $st = $pdo->prepare(
             u.name AS sales_name, n.label AS num_label,' . ($isAdmin && orders_has_wa($pdo) ? ' o.wa_enforced, o.wa_status,' : '') . ($chkReady ? ' o.verified_at, o.billed_at,' : '') . '
             COALESCE((SELECT SUM(c.amount) FROM cod_receipts c WHERE c.order_id = o.id), 0) AS cod_received,
             ' . ($isAdmin ? "(SELECT COALESCE(SUM(al.amount), 0) FROM account_ledger al WHERE al.order_id = o.id AND al.direction = 'in' AND al.entry_type IN ('prepaid','cod')) AS money_in,
-            (SELECT COALESCE(SUM(rf.amount), 0) FROM refunds rf WHERE rf.order_id = o.id) AS refunded_amt," : '') . '
+            (SELECT COALESCE(SUM(rf.amount), 0) FROM refunds rf WHERE rf.order_id = o.id) AS refunded_amt," : '') . ($tagsOk
+                ? "(SELECT s.status FROM sr_status s WHERE s.order_id = o.id) AS sr_status, (SELECT s.utr FROM sr_status s WHERE s.order_id = o.id) AS sr_utr,
+                   (SELECT s.crf FROM sr_status s WHERE s.order_id = o.id) AS sr_crf," : '') . '
             (' . $preExpr . ') AS prepaid_amt, (' . $codExpr . ') AS cod_amt
      FROM orders o JOIN users u ON u.id = o.salesperson_id LEFT JOIN order_numbers n ON n.id = o.number_id' . $w .
     ' ORDER BY o.id DESC LIMIT ' . $per . ' OFFSET ' . (($page - 1) * $per)
@@ -324,6 +344,24 @@ $buyDay = $from !== '' && $to !== '' && $from === $to ? date('d M Y', strtotime(
 <p class="hint" style="margin:-4px 0 12px">A partial prepaid order shows in both Prepaid and COD, but each tab counts only its own part. Refunded orders are left out.</p>
 <?php endif; ?>
 
+<?php if ($isAdmin && $mode === '' && $tagsOk): $tc = order_tag_counts($pdo); $tf = order_tag_filters(); ?>
+<div class="card" style="padding:12px 14px;margin-bottom:12px">
+  <div class="mini" style="margin-bottom:8px"><b>Where are my parcels?</b> · all <?= (int)$tc['total'] ?> orders · Shiprocket information on <?= (int)$tc['with_sr'] ?></div>
+  <div class="kchips" style="margin:0 0 6px">
+    <a class="btn btn-sm linkbtn <?= $tag === '' ? 'btn-accent' : 'btn-ghost' ?>" href="orders.php">All <?= (int)$tc['total'] ?></a>
+    <?php foreach (['delivered', 'transit', 'notshipped', 'cancelled', 'nodata'] as $k): ?>
+      <a class="btn btn-sm linkbtn <?= $tag === $k ? 'btn-accent' : 'btn-ghost' ?>" href="orders.php?tag=<?= e($k) ?>"><?= e($tf[$k]) ?> <b><?= (int)$tc[$k] ?></b></a>
+    <?php endforeach; ?>
+  </div>
+  <div class="kchips" style="margin:0">
+    <span class="mini" style="align-self:center">COD:</span>
+    <?php foreach (['cod_received', 'cod_remitted', 'cod_initiated', 'cod_pending'] as $k): ?>
+      <a class="btn btn-sm linkbtn <?= $tag === $k ? 'btn-accent' : 'btn-ghost' ?>" href="orders.php?tag=<?= e($k) ?>"><?= e($tf[$k]) ?> <b><?= (int)$tc[$k] ?></b></a>
+    <?php endforeach; ?>
+  </div>
+  <?php if ($tc['total'] - $tc['with_sr'] > 0): ?><div class="hint" style="margin-top:6px"><?= (int)($tc['total'] - $tc['with_sr']) ?> orders have no Shiprocket information yet. Upload Shiprocket's all-orders report once on <a href="delivered_upload.php">Upload delivered CSV</a>: it fills the tags, and the automatic sync keeps open orders fresh.</div><?php endif; ?>
+</div>
+<?php endif; ?>
 <?php if ($chkReady): ?>
 <?php
 $ck = $pdo->prepare('SELECT COUNT(*) AS c, COALESCE(SUM(o.verified_at IS NOT NULL), 0) AS v, COALESCE(SUM(o.billed_at IS NOT NULL), 0) AS b FROM orders o' . $w);
@@ -366,6 +404,13 @@ $ckr = $ck->fetch();
       <select id="num" name="num"><option value="0">All numbers</option>
         <?php foreach ($numList as $n): ?><option value="<?= (int)$n['id'] ?>"<?= $num === (int)$n['id'] ? ' selected' : '' ?>><?= e($n['label'] . ($n['phone'] ? ' - ' . $n['phone'] : '')) ?></option><?php endforeach; ?>
       </select></div>
+    <?php if ($tagsOk): ?>
+    <div><label for="tag">Parcel / COD tag</label>
+      <select id="tag" name="tag">
+        <option value="">All</option>
+        <?php foreach (order_tag_filters() as $tk => $tl): ?><option value="<?= e($tk) ?>"<?= $tag === $tk ? ' selected' : '' ?>><?= e($tl) ?></option><?php endforeach; ?>
+      </select></div>
+    <?php endif; ?>
     <?php if ($chkReady): ?>
     <div><label for="chk">Check</label>
       <select id="chk" name="chk">
@@ -418,7 +463,8 @@ $ckr = $ck->fetch();
           <?php if ($mode === 'prepaid'): ?><td class="num"><?= e(inr($r['prepaid_amt'])) ?></td>
           <?php elseif ($mode === 'cod' || $mode === 'cod_due'): ?><td class="num"><?= e(inr($codAmt)) ?></td><td class="num"><?= $refunded || $due <= 0.004 ? '-' : '<span class="tag tag-warn">' . e(inr($due)) . '</span>' ?></td>
           <?php endif; ?>
-          <td class="st-cell"><span class="tag <?= e(status_tag_class($r['status'])) ?>"><?= e(status_label($r['status'])) ?></span><?= $isAdmin ? wa_badge($r) : '' ?></td>
+          <td class="st-cell"><span class="tag <?= e(status_tag_class($r['status'])) ?>"><?= e(status_label($r['status'])) ?></span><?= $isAdmin ? wa_badge($r) : '' ?>
+            <?php if ($tagsOk): ?><div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px"><?php foreach (order_tag_list($r) as [$tl, $tc, $tt]): ?><span class="tag <?= e($tc) ?>" title="<?= e($tt) ?>"><?= e($tl) ?></span><?php endforeach; ?></div><?php endif; ?></td>
           <?php if ($isAdmin): ?><td><?= e($r['sales_name']) ?></td><?php endif; ?>
           <?php if ($chkReady): ?>
           <td class="chk-cell" style="white-space:nowrap" data-v="<?= $r['verified_at'] === null ? 0 : 1 ?>" data-b="<?= $r['billed_at'] === null ? 0 : 1 ?>"><?= order_check_cell_html((int)$r['id'], $r['verified_at'], $r['billed_at'], (string)($_SERVER['QUERY_STRING'] ?? '')) ?></td>
@@ -461,7 +507,8 @@ $ckr = $ck->fetch();
         if (!d.ok) { buttons.forEach(function (b) { b.disabled = false; }); window.alert(d.msg || 'Could not refund.'); return; }
         cell.innerHTML = d.html;
         var st = row && row.querySelector('.st-cell');
-        if (st) { st.innerHTML = d.status_html; }
+        var first = st && st.querySelector('.tag');
+        if (first) { first.outerHTML = d.status_html; } else if (st) { st.innerHTML = d.status_html; }
         window.alert(d.msg);
       })
       .catch(function () {
