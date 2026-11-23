@@ -7,6 +7,7 @@ $pdo = db();
 
 require_once __DIR__ . '/includes/order_dealer_lib.php';
 require_once __DIR__ . '/includes/cod_report_lib.php';
+require_once __DIR__ . '/includes/upload_ui_lib.php';
 $accounts = $pdo->query('SELECT id, name FROM accounts WHERE is_active = 1 ORDER BY name')->fetchAll();
 $codDefault = default_cod_account_id($pdo); // COD money normally comes into your own QR
 $results = null;
@@ -14,6 +15,7 @@ $summary = null;
 $colInfo = '';
 $groups = [];
 $reasons = [];
+$withoutSr = null;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
@@ -41,7 +43,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $beforePanel = $res['beforePanel'];
         $firstOrder = $res['firstOrder'];
         $reasons = cod_reason_summary($results);
-        $summary = ['ok' => $okCount, 'sum' => $okSum, 'bad' => count($results) - $okCount, 'notRemitted' => $notRemitted, 'delivered' => $delivCount, 'before' => $beforePanel, 'firstOrder' => $firstOrder];
+        $withoutSr = dl_orders_without_sr($pdo, 'cod_pending');
+        $unmatchedCount = count(array_filter($results, static fn($r) => ($r['kind'] ?? '') === 'unmatched'));
+        $summary = ['ok' => $okCount, 'sum' => $okSum, 'bad' => count($results) - $okCount, 'notRemitted' => $notRemitted, 'delivered' => $delivCount, 'before' => $beforePanel, 'firstOrder' => $firstOrder, 'unmatched' => $unmatchedCount];
     } catch (RuntimeException $ex) {
         flash('error', $ex->getMessage());
         redirect('cod_upload.php');
@@ -66,11 +70,13 @@ require __DIR__ . '/includes/header.php';
       <div class="stats" style="margin-bottom:14px">
         <div class="stat"><div class="k">Saved</div><div class="v pos"><?= (int)$summary['ok'] ?></div></div>
         <div class="stat"><div class="k">Money added</div><div class="v"><?= e(inr($summary['sum'])) ?></div></div>
-        <div class="stat"><div class="k">Skipped</div><div class="v <?= $summary['bad'] ? 'neg' : '' ?>"><?= (int)$summary['bad'] ?></div></div>
+        <div class="stat"><div class="k">Unmatched</div><div class="v <?= $summary['unmatched'] ? 'neg' : '' ?>"><?= (int)$summary['unmatched'] ?></div><div class="mini">no order has this Shiprocket Order ID / AWB</div></div>
+        <div class="stat"><div class="k">Other skipped</div><div class="v"><?= (int)$summary['bad'] - (int)$summary['unmatched'] ?></div><div class="mini">prepaid, already received, amount too high...</div></div>
         <?php if ($summary['delivered'] > 0): ?><div class="stat"><div class="k">Also marked delivered</div><div class="v"><?= (int)$summary['delivered'] ?></div></div><?php endif; ?>
         <?php if ($summary['before'] > 0): ?><div class="stat"><div class="k">From before the panel</div><div class="v"><?= (int)$summary['before'] ?></div><div class="mini">delivered before your first order (<?= e(date('d M Y', strtotime($summary['firstOrder']))) ?>), so not panel orders</div></div><?php endif; ?>
         <?php if ($summary['notRemitted'] > 0): ?><div class="stat"><div class="k">Not remitted yet</div><div class="v"><?= (int)$summary['notRemitted'] ?></div><div class="mini">no COD money in the file for these</div></div><?php endif; ?>
       </div>
+      <?= ui_unmatched_table($results, true) ?>
       <?php if ($reasons): ?>
       <h3 style="margin:0 0 8px">Why rows were skipped</h3>
       <div class="table-wrap" style="margin-bottom:16px"><table class="tight" style="min-width:560px">
@@ -99,10 +105,10 @@ require __DIR__ . '/includes/header.php';
       <h3 style="margin:0 0 8px">Every row</h3>
       <?php endif; ?>
       <div class="table-wrap"><table class="tight" style="min-width:480px">
-        <thead><tr><th>Row</th><th>AWB / order ID</th><th class="num">Amount</th><th>Result</th></tr></thead>
+        <thead><tr><th>Row</th><th>Shiprocket Order ID</th><th>AWB</th><th class="num">Amount</th><th>Result</th></tr></thead>
         <tbody>
         <?php foreach ($results as $r): ?>
-          <tr><td><?= (int)$r['row'] ?></td><td><?= e($r['ref']) ?></td><td class="num"><?= e(inr($r['amount'])) ?></td>
+          <tr><td><?= (int)$r['row'] ?></td><td><?= e($r['srid'] !== '' ? $r['srid'] : '-') ?></td><td><?= e($r['awb'] !== '' ? $r['awb'] : '-') ?></td><td class="num"><?= e(inr($r['amount'])) ?></td>
             <td><span class="tag <?= $r['ok'] ? 'tag-ok' : 'tag-bad' ?>"><?= $r['ok'] ? 'Saved' : 'Skipped' ?></span> <span class="mini"><?= e($r['msg']) ?></span></td></tr>
         <?php endforeach; ?>
         </tbody>
@@ -123,11 +129,12 @@ require __DIR__ . '/includes/header.php';
     </form>
     <div class="sheet-note" style="margin-top:14px">
       Upload <b>Shiprocket's COD report exactly as you download it</b> (.xls, .xlsx or .csv), no editing. Columns are found by their names:
-      <b>AWB</b> and <b>Order Id</b> (to find the order), <b>Order Value</b> / <b>Remitted Amount</b> (the COD money), <b>Remittance Date</b>, <b>CRF ID</b>, <b>UTR</b>, <b>Delivered Date</b>.
+      <b>Order Id</b> (the Shiprocket Order ID you typed on New order: the main key to find the order), <b>AWB</b> (second key), <b>Order Value</b> / <b>Remitted Amount</b> (the COD money), <b>Remittance Date</b>, <b>CRF ID</b>, <b>UTR</b>, <b>Delivered Date</b>.
       The COD <i>charge</i> column ("COD Payble Amount") is never used as money. Without a header row: A order number or tracking ID, B amount, C date.
       Rows for orders that are not COD, already fully received, or more than pending are skipped and explained. A parcel still showing created / dispatched is marked delivered when its COD money is saved.
       Uploading the same report again is safe: money already saved is not counted twice.
     </div>
   </section>
 </div>
+<?= ui_without_sr_card($withoutSr, 'COD orders with no Shiprocket Order ID saved', 'These COD orders are still waiting for their COD money and cannot be matched by the report. Open the order and type its Shiprocket Order ID.') ?>
 <?php require __DIR__ . '/includes/footer.php'; ?>

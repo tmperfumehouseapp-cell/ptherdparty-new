@@ -112,11 +112,11 @@ function dl_has_table(PDO $pdo, string $t): bool
 
 /**
  * Looks the candidate IDs up. Returns [order row (id, status), how it matched] or null.
- * Where an ID can be saved in the panel, all are checked, in this order of trust:
- *   1. the tracking ID on the order (also when several AWBs are saved together like "AWB1, AWB2")
- *   2. the AWB of a Shiprocket shipment booked by the panel (shipments table)
- *   3. the Shiprocket Order ID on the order (also inside a list)
- *   4. the Shiprocket order id of a shipment booked by the panel
+ * THE SHIPROCKET ORDER ID IS THE MAIN KEY (the one typed in "Shiprocket Order ID" on New order). In order of trust:
+ *   1. the Shiprocket Order ID saved on the order (also one item of a list)
+ *   2. the Shiprocket order id of a shipment the panel booked (shipments table)
+ *   3. the tracking ID / AWB saved on the order (also one item of a list like "AWB1, AWB2")
+ *   4. the AWB of a shipment the panel booked
  *   5. our own order number (short numbers only)
  * A long ID is only accepted when it points to ONE order.
  */
@@ -150,29 +150,16 @@ function dl_find_order(PDO $pdo, array $candidates, bool $hasSr): ?array
         $rows = $q[1]->fetchAll();
         return count($rows) === 1 ? $rows[0] : null; // inside a list it must point to ONE order
     };
-    $byTrack = $lookup('tracking_id');
     $bySr = $hasSr ? $lookup('shiprocket_order_id') : null;
-    $byShipAwb = $hasShip ? $pdo->prepare("SELECT o.id, o.status FROM shipments s JOIN orders o ON o.id = s.order_id WHERE s.awb = ? ORDER BY s.id DESC LIMIT 1") : null;
+    $byTrack = $lookup('tracking_id');
     $byShipOrder = $hasShip ? $pdo->prepare("SELECT o.id, o.status FROM shipments s JOIN orders o ON o.id = s.order_id WHERE s.sr_order_id = ? ORDER BY s.id DESC LIMIT 1") : null;
+    $byShipAwb = $hasShip ? $pdo->prepare("SELECT o.id, o.status FROM shipments s JOIN orders o ON o.id = s.order_id WHERE s.awb = ? ORDER BY s.id DESC LIMIT 1") : null;
     $byId = $pdo->prepare('SELECT id, status FROM orders WHERE id = ?');
 
-    foreach ($cands as $c) {
-        if ($o = $find($byTrack, $c)) {
-            return [$o, 'tracking ID'];
-        }
-    }
-    if ($byShipAwb) {
-        foreach ($cands as $c) {
-            $byShipAwb->execute([$c]);
-            if ($o = $byShipAwb->fetch()) {
-                return [$o, 'AWB of the Shiprocket shipment'];
-            }
-        }
-    }
     if ($bySr) {
         foreach ($cands as $c) {
             if ($o = $find($bySr, $c)) {
-                return [$o, 'Shiprocket order ID'];
+                return [$o, 'Shiprocket Order ID'];
             }
         }
     }
@@ -180,7 +167,20 @@ function dl_find_order(PDO $pdo, array $candidates, bool $hasSr): ?array
         foreach ($cands as $c) {
             $byShipOrder->execute([$c]);
             if ($o = $byShipOrder->fetch()) {
-                return [$o, 'Shiprocket order ID of the shipment'];
+                return [$o, 'Shiprocket Order ID of the shipment'];
+            }
+        }
+    }
+    foreach ($cands as $c) {
+        if ($o = $find($byTrack, $c)) {
+            return [$o, 'tracking ID (AWB)'];
+        }
+    }
+    if ($byShipAwb) {
+        foreach ($cands as $c) {
+            $byShipAwb->execute([$c]);
+            if ($o = $byShipAwb->fetch()) {
+                return [$o, 'AWB of the Shiprocket shipment'];
             }
         }
     }
@@ -193,4 +193,103 @@ function dl_find_order(PDO $pdo, array $candidates, bool $hasSr): ?array
         }
     }
     return null;
+}
+
+/**
+ * Orders of the panel that have no Shiprocket Order ID saved, so no report can ever match them.
+ * $only = 'undelivered' (created / dispatched) or 'cod_pending' (COD orders still waiting for COD money). Returns ['count', 'rows'] or null.
+ */
+function dl_orders_without_sr(PDO $pdo, string $only, int $limit = 60): ?array
+{
+    try {
+        $where = "(shiprocket_order_id IS NULL OR TRIM(shiprocket_order_id) = '') AND status <> 'refunded'";
+        if ($only === 'undelivered') {
+            $where .= " AND status IN ('created','dispatched')";
+        } else {
+            $where .= " AND payment_mode = 'cod' AND total - advance_amount - COALESCE((SELECT SUM(c.amount) FROM cod_receipts c WHERE c.order_id = orders.id), 0) > 0.004";
+        }
+        $cnt = (int)$pdo->query("SELECT COUNT(*) FROM orders WHERE $where")->fetchColumn();
+        $rows = $pdo->query("SELECT id, order_date, customer_name, status, total, advance_amount FROM orders WHERE $where ORDER BY id DESC LIMIT " . (int)$limit)->fetchAll();
+        return ['count' => $cnt, 'rows' => $rows];
+    } catch (Throwable $e) {
+        return null; // the Shiprocket Order ID column is not there yet
+    }
+}
+
+/**
+ * Marks the parcels of a Shiprocket report delivered. Returns
+ * ['colInfo', 'results' (a line per row: row, ref, srid, awb, date, kind, ok, msg), 'counts', 'firstOrder'].
+ * kind: ok = marked delivered | already = found, but already delivered | unmatched = no order has this Shiprocket Order ID / AWB |
+ *       status = the report says it is not delivered | other = found, but returned / refunded.
+ * Parcels delivered before the panel's first order are only counted (counts['before']), they cannot be panel orders.
+ */
+function dl_process_rows(PDO $pdo, array $rows): array
+{
+    $cols = dl_detect_columns($rows);
+    $hasSr = function_exists('orders_has_sr_id') ? orders_has_sr_id($pdo) : false;
+    $firstOrder = (string)$pdo->query('SELECT MIN(order_date) FROM orders')->fetchColumn();
+    $first = static function (array $r, array $idx): string {
+        foreach ($idx as $c) {
+            $v = dl_norm((string)($r[$c] ?? ''));
+            if ($v !== '') {
+                return $v;
+            }
+        }
+        return '';
+    };
+    $counts = ['ok' => 0, 'already' => 0, 'unmatched' => 0, 'status' => 0, 'other' => 0, 'before' => 0];
+    $results = [];
+    for ($i = $cols['start']; $i < count($rows); $i++) {
+        $r = $rows[$i];
+        $cands = [];
+        foreach (array_merge($cols['order'], $cols['track']) as $c) {
+            $cands[] = (string)($r[$c] ?? '');
+        }
+        $srid = $first($r, $cols['order']);
+        $awb = $first($r, $cols['track']);
+        if ($srid === '' && $awb === '') {
+            continue;
+        }
+        $statusText = $cols['status'] !== null ? trim((string)($r[$cols['status']] ?? '')) : '';
+        $date = $cols['date'] !== null ? sheet_date((string)($r[$cols['date']] ?? '')) : null;
+        $line = ['row' => $i + 1, 'ref' => $srid !== '' ? $srid : $awb, 'srid' => $srid, 'awb' => $awb, 'date' => $date, 'kind' => '', 'ok' => false, 'msg' => ''];
+
+        $why = dl_skip_reason($cols['status'], $statusText);
+        if ($why !== '') {
+            $line['kind'] = 'status';
+            $line['msg'] = $why;
+            $counts['status']++;
+            $results[] = $line;
+            continue;
+        }
+        $found = dl_find_order($pdo, $cands, $hasSr);
+        if (!$found) {
+            if ($firstOrder !== '' && $date !== null && $date < $firstOrder) {
+                $counts['before']++;
+                continue;
+            }
+            $line['kind'] = 'unmatched';
+            $line['msg'] = 'Not in the panel: no order has this Shiprocket Order ID or AWB.';
+            $counts['unmatched']++;
+        } else {
+            [$o, $by] = $found;
+            if (in_array($o['status'], ['created', 'dispatched'], true)) {
+                mark_delivered_on($pdo, (int)$o['id'], $date, $awb !== '' ? $awb : null);
+                $line['kind'] = 'ok';
+                $line['ok'] = true;
+                $line['msg'] = order_no($o['id']) . ' marked delivered (matched by ' . $by . ').';
+                $counts['ok']++;
+            } elseif ($o['status'] === 'delivered') {
+                $line['kind'] = 'already';
+                $line['msg'] = order_no($o['id']) . ' is already delivered (matched by ' . $by . ').';
+                $counts['already']++;
+            } else {
+                $line['kind'] = 'other';
+                $line['msg'] = order_no($o['id']) . ' is ' . strtolower(status_label($o['status'])) . ', so it was left as it is.';
+                $counts['other']++;
+            }
+        }
+        $results[] = $line;
+    }
+    return ['colInfo' => $cols['names'], 'results' => $results, 'counts' => $counts, 'firstOrder' => $firstOrder];
 }
