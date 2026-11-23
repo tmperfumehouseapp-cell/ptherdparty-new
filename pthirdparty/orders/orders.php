@@ -5,6 +5,7 @@ require __DIR__ . '/includes/buying_lib.php';
 require_once __DIR__ . '/includes/orders_lib.php';
 require_once __DIR__ . '/includes/simple_lib.php';
 require_once __DIR__ . '/includes/order_check_lib.php';
+require_once __DIR__ . '/includes/refund_ui_lib.php';
 $user = require_login();
 $pdo = db();
 $isAdmin = $user['role'] === 'admin';
@@ -26,6 +27,35 @@ $sales = $isAdmin ? (int)($_GET['sales'] ?? 0) : 0;
 $num = (int)($_GET['num'] ?? 0);
 $page = max(1, (int)($_GET['page'] ?? 1));
 $per = 50;
+
+// refund of a whole order from the list (manager): every part goes back out of the account it came into
+if ($isAdmin && $_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') === 'refund_full') {
+    csrf_verify();
+    $rfId = (int)($_POST['id'] ?? 0);
+    $rfOk = true;
+    try {
+        $rfAmt = refund_order_full($pdo, $user, $rfId, trim((string)($_POST['note'] ?? '')));
+        $rfMsg = 'Order ' . order_no($rfId) . ' refunded: ' . inr($rfAmt) . ' went back to the customer.';
+    } catch (RuntimeException $ex) {
+        $rfOk = false;
+        $rfMsg = $ex->getMessage();
+    }
+    if ((string)($_POST['ajax'] ?? '') === '1') {
+        $rs = $pdo->prepare('SELECT status FROM orders WHERE id = ?');
+        $rs->execute([$rfId]);
+        $rStatus = (string)$rs->fetchColumn();
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode([
+            'ok' => $rfOk, 'msg' => $rfMsg, 'status' => $rStatus,
+            'status_html' => '<span class="tag ' . e(status_tag_class($rStatus)) . '">' . e(status_label($rStatus)) . '</span>',
+            'html' => order_refund_cell_html($rfId, $rStatus, order_refundable($pdo, $rfId), (string)($_POST['qs'] ?? '')),
+        ], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    flash($rfOk ? 'ok' : 'error', $rfMsg);
+    parse_str((string)($_POST['qs'] ?? ''), $rfBack);
+    redirect('orders.php' . ($rfBack ? '?' . http_build_query($rfBack) : ''));
+}
 
 // daily check (manager): Verify an order, then mark its dealer Bill done
 $chkReady = $isAdmin && order_check_ready($pdo);
@@ -177,7 +207,7 @@ if ($isAdmin && $mode === '') {
             "SELECT COALESCE(pa.name, 'Dealer not set') AS dealer, COALESCE(SUM(oi.qty), 0) AS pcs, COALESCE(SUM(oi.qty * oi.base_price), 0) AS buy
              FROM order_items oi
              JOIN orders o ON o.id = oi.order_id
-             LEFT JOIN parties pa ON pa.id = oi.party_id" . $w . "
+             LEFT JOIN parties pa ON pa.id = oi.party_id" . ($w !== '' ? $w . " AND o.status <> 'refunded'" : " WHERE o.status <> 'refunded'") . "
              GROUP BY oi.party_id, pa.name
              ORDER BY buy DESC"
         );
@@ -194,6 +224,8 @@ $st = $pdo->prepare(
     'SELECT o.id, o.order_date, o.customer_name, o.customer_phone, o.payment_mode, o.total, o.advance_amount, o.profit, o.status, o.tracking_id,
             u.name AS sales_name, n.label AS num_label,' . ($isAdmin && orders_has_wa($pdo) ? ' o.wa_enforced, o.wa_status,' : '') . ($chkReady ? ' o.verified_at, o.billed_at,' : '') . '
             COALESCE((SELECT SUM(c.amount) FROM cod_receipts c WHERE c.order_id = o.id), 0) AS cod_received,
+            ' . ($isAdmin ? "(SELECT COALESCE(SUM(al.amount), 0) FROM account_ledger al WHERE al.order_id = o.id AND al.direction = 'in' AND al.entry_type IN ('prepaid','cod')) AS money_in,
+            (SELECT COALESCE(SUM(rf.amount), 0) FROM refunds rf WHERE rf.order_id = o.id) AS refunded_amt," : '') . '
             (' . $preExpr . ') AS prepaid_amt, (' . $codExpr . ') AS cod_amt
      FROM orders o JOIN users u ON u.id = o.salesperson_id LEFT JOIN order_numbers n ON n.id = o.number_id' . $w .
     ' ORDER BY o.id DESC LIMIT ' . $per . ' OFFSET ' . (($page - 1) * $per)
@@ -356,7 +388,7 @@ $ckr = $ck->fetch();
   <?php else: ?>
   <div class="table-wrap">
     <table class="tight" style="min-width:<?= $mode === "" ? 760 : 900 ?>px">
-      <thead><tr><th>#</th><th>Date</th><th>Customer</th><th>Payment</th><th class="num">Total</th><?php if ($mode === 'prepaid'): ?><th class="num">Prepaid received</th><?php elseif ($mode === 'cod' || $mode === 'cod_due'): ?><th class="num">COD amount</th><th class="num">COD pending</th><?php endif; ?><th>Status</th><?php if ($isAdmin): ?><th>By</th><?php endif; ?><?php if ($chkReady): ?><th>Check</th><?php endif; ?></tr></thead>
+      <thead><tr><th>#</th><th>Date</th><th>Customer</th><th>Payment</th><th class="num">Total</th><?php if ($mode === 'prepaid'): ?><th class="num">Prepaid received</th><?php elseif ($mode === 'cod' || $mode === 'cod_due'): ?><th class="num">COD amount</th><th class="num">COD pending</th><?php endif; ?><th>Status</th><?php if ($isAdmin): ?><th>By</th><?php endif; ?><?php if ($chkReady): ?><th>Check</th><?php endif; ?><?php if ($isAdmin): ?><th>Refund</th><?php endif; ?></tr></thead>
       <tbody>
       <?php foreach ($rows as $r): ?>
         <?php
@@ -386,10 +418,13 @@ $ckr = $ck->fetch();
           <?php if ($mode === 'prepaid'): ?><td class="num"><?= e(inr($r['prepaid_amt'])) ?></td>
           <?php elseif ($mode === 'cod' || $mode === 'cod_due'): ?><td class="num"><?= e(inr($codAmt)) ?></td><td class="num"><?= $refunded || $due <= 0.004 ? '-' : '<span class="tag tag-warn">' . e(inr($due)) . '</span>' ?></td>
           <?php endif; ?>
-          <td><span class="tag <?= e(status_tag_class($r['status'])) ?>"><?= e(status_label($r['status'])) ?></span><?= $isAdmin ? wa_badge($r) : '' ?></td>
+          <td class="st-cell"><span class="tag <?= e(status_tag_class($r['status'])) ?>"><?= e(status_label($r['status'])) ?></span><?= $isAdmin ? wa_badge($r) : '' ?></td>
           <?php if ($isAdmin): ?><td><?= e($r['sales_name']) ?></td><?php endif; ?>
           <?php if ($chkReady): ?>
           <td class="chk-cell" style="white-space:nowrap" data-v="<?= $r['verified_at'] === null ? 0 : 1 ?>" data-b="<?= $r['billed_at'] === null ? 0 : 1 ?>"><?= order_check_cell_html((int)$r['id'], $r['verified_at'], $r['billed_at'], (string)($_SERVER['QUERY_STRING'] ?? '')) ?></td>
+          <?php endif; ?>
+          <?php if ($isAdmin): ?>
+          <td class="rf-cell" style="white-space:nowrap"><?= order_refund_cell_html((int)$r['id'], (string)$r['status'], max(0.0, round((float)$r['money_in'] - (float)$r['refunded_amt'], 2)), (string)($_SERVER['QUERY_STRING'] ?? '')) ?></td>
           <?php endif; ?>
         </tr>
       <?php endforeach; ?>
@@ -405,6 +440,38 @@ $ckr = $ck->fetch();
   <?php endif; ?>
   <?php endif; ?>
 </section>
+<?php if ($isAdmin): ?>
+<script>
+// Refund full: saves in the background and changes only that row (status and Refund cell), so the page never jumps.
+(function () {
+  document.addEventListener('submit', function (ev) {
+    var form = ev.target;
+    if (!form || !form.classList || !form.classList.contains('rf-form')) { return; }
+    if (!window.fetch) { return; } // old browser: normal submit still works
+    ev.preventDefault();
+    if (!window.confirm('Refund the full ' + (form.getAttribute('data-left') || '') + ' for this order? It goes back out of the same accounts, and the order is taken out of Prepaid, COD, dealer and buying totals.')) { return; }
+    var cell = form.closest('.rf-cell'), row = form.closest('tr');
+    var fd = new FormData(form);
+    fd.set('ajax', '1');
+    var buttons = form.querySelectorAll('button');
+    buttons.forEach(function (b) { b.disabled = true; });
+    fetch('orders.php', { method: 'POST', body: fd, credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d.ok) { buttons.forEach(function (b) { b.disabled = false; }); window.alert(d.msg || 'Could not refund.'); return; }
+        cell.innerHTML = d.html;
+        var st = row && row.querySelector('.st-cell');
+        if (st) { st.innerHTML = d.status_html; }
+        window.alert(d.msg);
+      })
+      .catch(function () {
+        buttons.forEach(function (b) { b.disabled = false; });
+        window.alert('Could not save. Check your internet and try again.');
+      });
+  });
+})();
+</script>
+<?php endif; ?>
 <?php if ($chkReady): ?>
 <script>
 // Verify / Bill done / Undo save in the background and change only that row, so the page never reloads or jumps to the top.

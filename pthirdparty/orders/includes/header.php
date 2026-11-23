@@ -11,6 +11,7 @@ $nav = [
     ['key' => 'commission', 'label' => 'Commission',  'href' => 'commission.php', 'ready' => true,  'admin' => false],
     ['key' => 'dealers',    'label' => 'Dealers',     'href' => 'dealers.php',    'ready' => true,  'admin' => true],
     ['key' => 'billing',    'label' => 'Billing',     'href' => 'billing.php',    'ready' => true,  'admin' => true],
+    ['key' => 'refunds',    'label' => 'Refunds',     'href' => 'refunds.php',    'ready' => true,  'admin' => true],
     ['key' => 'cod_amount', 'label' => 'COD Amount',  'href' => 'cod_amount.php', 'ready' => true,  'admin' => true],
     ['key' => 'products',   'label' => 'Products',    'href' => 'products.php',   'ready' => true,  'admin' => true],
     ['key' => 'accounts',   'label' => 'Accounts',    'href' => 'accounts.php',   'ready' => true,  'admin' => true],

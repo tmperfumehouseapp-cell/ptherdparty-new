@@ -170,8 +170,11 @@ function refund_order(PDO $pdo, array $user, int $orderId, float $amount, int $a
         if (!$o) {
             throw new RuntimeException('Order not found.');
         }
-        if (!in_array($o['status'], ['delivered', 'return_received'], true)) {
-            throw new RuntimeException('A return or cancel is possible only after the order is delivered.');
+        if (!in_array($o['status'], ['created', 'dispatched', 'delivered', 'return_received'], true)) {
+            throw new RuntimeException('This order is already refunded.');
+        }
+        if (function_exists('sr_order_locked') && sr_order_locked($pdo, $orderId)) {
+            throw new RuntimeException('This order is booked in Shiprocket. Press Cancel shipment first, then refund it.');
         }
         $already = order_refunded($pdo, $orderId);
         $received = order_money_in($pdo, $orderId);
@@ -198,6 +201,48 @@ function refund_order(PDO $pdo, array $user, int $orderId, float $amount, int $a
             $pdo->prepare("UPDATE orders SET status = 'return_received' WHERE id = ? AND status = 'delivered'")->execute([$orderId]);
         }
     });
+}
+
+/** What is still refundable on an order: money received minus what was already refunded. */
+function order_refundable(PDO $pdo, int $orderId): float
+{
+    return max(0.0, round(order_money_in($pdo, $orderId) - order_refunded($pdo, $orderId), 2));
+}
+
+/**
+ * Refunds EVERYTHING the customer paid on an order (prepaid, COD advance, COD received), each part back out of the account
+ * it came into. The order is closed as 'refunded', so it drops out of Prepaid, COD, dealer and buying totals, and a dealer QR
+ * gets its 'returned' line. Works at any stage (a cancel before delivery, or a return after it). Returns the total refunded.
+ */
+function refund_order_full(PDO $pdo, array $user, int $orderId, string $note = ''): float
+{
+    $total = 0.0;
+    in_tx($pdo, function () use ($pdo, $user, $orderId, $note, &$total) {
+        $o = $pdo->prepare('SELECT id, status FROM orders WHERE id = ? FOR UPDATE');
+        $o->execute([$orderId]);
+        $ord = $o->fetch();
+        if (!$ord) {
+            throw new RuntimeException('Order not found.');
+        }
+        if ($ord['status'] === 'refunded') {
+            throw new RuntimeException('This order is already refunded.');
+        }
+        $st = $pdo->prepare(
+            "SELECT account_id, ROUND(SUM(CASE WHEN direction = 'in' THEN amount ELSE -amount END), 2) AS net
+             FROM account_ledger WHERE order_id = ? AND entry_type IN ('prepaid','cod','refund') GROUP BY account_id ORDER BY MIN(id)"
+        );
+        $st->execute([$orderId]);
+        $parts = array_filter($st->fetchAll(), static fn($r) => (float)$r['net'] > 0.004);
+        if (!$parts) {
+            throw new RuntimeException('Nothing left to refund on this order.');
+        }
+        $today = biz_today();
+        foreach ($parts as $r) {
+            refund_order($pdo, $user, $orderId, (float)$r['net'], (int)$r['account_id'], null, $today, $note);
+            $total += (float)$r['net'];
+        }
+    });
+    return round($total, 2);
 }
 
 /** Deletes an order and everything it created (admin, within 1 hour). */
