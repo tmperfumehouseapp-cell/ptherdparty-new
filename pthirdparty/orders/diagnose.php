@@ -23,7 +23,13 @@ try {
 $hasSr = orders_has_sr_id($pdo);
 
 /* ---- live test (button) ---- */
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+$act = [];    // results of the send / retry buttons
+$from = (string)($_GET['from'] ?? $_POST['from'] ?? '');
+if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from) || !strtotime($from)) {
+    $from = date('Y-m-d', strtotime('-7 days'));
+}
+$action = (string)($_POST['action'] ?? '');
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'live') {
     csrf_verify();
     @set_time_limit(80);
     if (!sr_enabled()) {
@@ -147,6 +153,127 @@ foreach ($q->fetchAll() as $r) {
 }
 arsort($reasonCount);
 
+/* ---- 4. daily shipments: did each recent order really go to Shiprocket? ---- */
+require_once __DIR__ . '/includes/shiprocket_lib.php';
+$shipReady = sr_ready($pdo);
+$eligibleSql = "SELECT o.id FROM orders o WHERE o.order_date >= ? AND o.status IN ('created','dispatched')
+    AND COALESCE(o.tracking_id,'') = ''" . ($hasSr ? " AND COALESCE(o.shiprocket_order_id,'') = ''" : '') . "
+    AND EXISTS (SELECT 1 FROM order_items oi JOIN parties pa ON pa.id = oi.party_id AND pa.auto_ship = 1 WHERE oi.order_id = o.id)
+    AND NOT EXISTS (SELECT 1 FROM shipments sh WHERE sh.order_id = o.id)";
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && in_array($action, ['send', 'retry'], true) && $shipReady) {
+    csrf_verify();
+    @set_time_limit(90);
+    $only = (int)($_POST['order'] ?? 0);
+    $ids = [];
+    try {
+        if ($action === 'send') {
+            $q = $pdo->prepare($eligibleSql . ($only ? ' AND o.id = ' . $only : '') . ' ORDER BY o.id LIMIT 8');
+            $q->execute([$from]);
+            foreach ($q->fetchAll(PDO::FETCH_COLUMN) as $oid) {
+                $ids[] = (int)$oid;
+                sr_queue_order($pdo, (int)$oid);
+            }
+        } else {
+            $q = $pdo->prepare("SELECT sh.id, sh.order_id FROM shipments sh JOIN orders o ON o.id = sh.order_id WHERE sh.status = 'failed' AND o.order_date >= ?" . ($only ? ' AND o.id = ' . $only : '') . ' ORDER BY sh.id LIMIT 8');
+            $q->execute([$from]);
+            foreach ($q->fetchAll() as $r) {
+                sr_requeue($pdo, (int)$r['id']);
+                $ids[] = (int)$r['order_id'];
+            }
+        }
+        $ids = array_values(array_unique($ids));
+        foreach ($ids as $oid) {
+            sr_process_order($pdo, $oid);
+        }
+        $done = 0;
+        foreach ($ids as $oid) {
+            $c = $pdo->prepare('SELECT status, awb, error FROM shipments WHERE order_id = ? ORDER BY id');
+            $c->execute([$oid]);
+            $line = [];
+            foreach ($c->fetchAll() as $sh) {
+                $line[] = $sh['status'] . ($sh['awb'] ? ' AWB ' . $sh['awb'] : '') . ($sh['error'] ? ' - ' . $sh['error'] : '');
+                $done += $sh['status'] === 'assigned' ? 1 : 0;
+            }
+            $act[] = [$line && strpos(implode(' ', $line), 'failed') === false ? 'ok' : 'bad', 'Order #' . $oid . ': ' . ($line ? implode(' | ', $line) : 'nothing was queued')];
+        }
+        if (!$ids) {
+            $act[] = ['warn', $action === 'send' ? 'No order needed sending (only orders with an auto-ship dealer, no shipment yet, and no Shiprocket Order ID / AWB typed are sent).' : 'No failed shipment found in this date range.'];
+        }
+    } catch (Throwable $e) {
+        $act[] = ['bad', 'Stopped: ' . $e->getMessage()];
+    }
+}
+$shipRows = [];
+$shipCount = [];
+$autoParties = [];
+$cronKeySet = trim((string)sr_cfg('cron_key', '')) !== '';
+if ($shipReady) {
+    foreach ($pdo->query('SELECT status, COUNT(*) c FROM shipments GROUP BY status')->fetchAll() as $r) {
+        $shipCount[$r['status']] = (int)$r['c'];
+    }
+    foreach ($pdo->query('SELECT name, auto_ship FROM parties WHERE is_active = 1 ORDER BY name')->fetchAll() as $r) {
+        $autoParties[] = $r['name'] . ($r['auto_ship'] ? ' (auto-ship ON)' : ' (auto-ship off)');
+    }
+    $add($autoParties ? 'ok' : 'warn', 'Dealers: ' . count($autoParties) . ' active', implode(', ', $autoParties));
+    $add($shipCount ? 'ok' : 'warn', 'Panel shipments in Shiprocket: ' . ($shipCount ? implode(', ', array_map(static fn($k, $v) => "$v $k", array_keys($shipCount), $shipCount)) : 'none ever created by the panel'), $shipCount ? '' : 'The panel has never created a shipment itself. Orders are created in Shiprocket by hand / by Shopify, and only their ID is typed here.');
+    $add($cronKeySet ? 'ok' : 'warn', $cronKeySet ? 'Send-queue cron key is set' : 'No cron key for ship_run.php', $cronKeySet ? 'Hostinger cron job must open ship_run.php?key=... every few minutes to resend anything that failed or waited.' : 'Without it, a shipment that does not go out right after the order is saved is only retried when you open the order.');
+
+    $oq = $pdo->prepare("SELECT o.id, o.order_date, o.status, o.tracking_id, " . ($hasSr ? 'o.shiprocket_order_id' : "'' AS shiprocket_order_id") . " FROM orders o WHERE o.order_date >= ? ORDER BY o.id DESC LIMIT 200");
+    $oq->execute([$from]);
+    $orders = $oq->fetchAll();
+    $dealerOf = $shipOf = [];
+    if ($orders) {
+        $in = implode(',', array_map(static fn($r) => (int)$r['id'], $orders));
+        foreach ($pdo->query("SELECT DISTINCT oi.order_id, pa.name, pa.auto_ship FROM order_items oi JOIN parties pa ON pa.id = oi.party_id WHERE oi.order_id IN ($in)")->fetchAll() as $r) {
+            $dealerOf[(int)$r['order_id']][] = [$r['name'], (int)$r['auto_ship']];
+        }
+        foreach ($pdo->query("SELECT order_id, status, awb, error, attempts, next_try FROM shipments WHERE order_id IN ($in) ORDER BY id")->fetchAll() as $r) {
+            $shipOf[(int)$r['order_id']][] = $r;
+        }
+    }
+    foreach ($orders as $o) {
+        $id = (int)$o['id'];
+        $dl = $dealerOf[$id] ?? [];
+        $auto = array_filter($dl, static fn($d) => $d[1] === 1);
+        $dn = implode(', ', array_map(static fn($d) => $d[0] . ($d[1] ? ' [auto]' : ' [off]'), $dl)) ?: 'no dealer';
+        $typed = trim((string)$o['shiprocket_order_id']) !== '' || trim((string)$o['tracking_id']) !== '';
+        $sh = $shipOf[$id] ?? [];
+        $lv = 'ok';
+        $can = '';
+        if ($sh) {
+            $parts = [];
+            foreach ($sh as $x) {
+                if ($x['status'] === 'assigned') {
+                    $parts[] = 'Sent to Shiprocket, AWB ' . $x['awb'];
+                } elseif ($x['status'] === 'failed') {
+                    $lv = 'bad';
+                    $can = 'retry';
+                    $parts[] = 'FAILED after ' . (int)$x['attempts'] . ' tries: ' . $x['error'];
+                } elseif ($x['status'] === 'cancelled') {
+                    $lv = $lv === 'bad' ? 'bad' : 'warn';
+                    $parts[] = 'Cancelled in Shiprocket';
+                } else {
+                    $lv = $lv === 'bad' ? 'bad' : 'warn';
+                    $parts[] = 'Waiting in queue (' . $x['status'] . ', ' . (int)$x['attempts'] . ' tries' . ($x['error'] ? ', last problem: ' . $x['error'] : '') . ')';
+                }
+            }
+            $why = implode(' | ', $parts);
+        } elseif (in_array($o['status'], ['delivered', 'refunded'], true)) {
+            $why = 'Order is ' . $o['status'] . '; nothing to send';
+        } elseif ($typed) {
+            $why = 'Done by hand: ' . (trim((string)$o['shiprocket_order_id']) !== '' ? 'Shiprocket Order ID typed' : 'tracking ID typed') . ', the panel will not create a second one';
+        } elseif ($auto) {
+            $lv = 'bad';
+            $can = 'send';
+            $why = 'NEVER SENT: an auto-ship dealer is on it, but no shipment was ever queued (order made before auto-ship worked, or the queue step failed silently)';
+        } else {
+            $lv = 'warn';
+            $why = 'Not sent: no dealer on this order has auto-ship ON (' . $dn . '), and no Shiprocket Order ID is typed';
+        }
+        $shipRows[] = [$id, (string)$o['order_date'], (string)$o['status'], $dn, $why, $lv, $can];
+    }
+}
+
 /* ---- plain-text report to copy ---- */
 $rep = ["ORDER DESK DIAGNOSE " . date('Y-m-d H:i')];
 foreach ($F as [$lv, $t, $d]) {
@@ -161,6 +288,15 @@ if ($sample) {
     foreach ($sample as $s) {
         $rep[] = '#' . implode(' | ', array_map(static fn($v) => $v === '' ? '-' : $v, $s));
     }
+}
+if ($shipRows) {
+    $rep[] = '--- orders since ' . $from . ' (order | date | status | dealers | what happened) ---';
+    foreach ($shipRows as $x) {
+        $rep[] = '#' . $x[0] . ' | ' . $x[1] . ' | ' . $x[2] . ' | ' . $x[3] . ' | ' . $x[4];
+    }
+}
+foreach ($act as [$lv, $t]) {
+    $rep[] = '[ACTION ' . strtoupper($lv) . '] ' . $t;
 }
 foreach ($live as [$lv, $t]) {
     $rep[] = '[LIVE ' . strtoupper($lv) . '] ' . $t;
@@ -178,7 +314,7 @@ $cls = ['ok' => 'tag-ok', 'warn' => 'tag-warn', 'bad' => 'tag-bad'];
     <section class="card">
       <h2>Live test with Shiprocket</h2>
       <p style="margin:0 0 10px">Logs in to Shiprocket and asks about up to 5 of your open orders, so we see the exact answer or error. Nothing is changed.</p>
-      <form method="post"><?= csrf_field() ?><button class="btn btn-accent" type="submit">Run live test</button></form>
+      <form method="post"><?= csrf_field() ?><input type="hidden" name="action" value="live"><button class="btn btn-accent" type="submit">Run live test</button></form>
       <?php foreach ($live as [$lv, $t]): ?>
         <div style="margin-top:8px"><span class="tag <?= e($cls[$lv]) ?>"><?= e(strtoupper($lv)) ?></span> <?= e($t) ?></div>
       <?php endforeach; ?>
@@ -201,6 +337,28 @@ $cls = ['ok' => 'tag-ok', 'warn' => 'tag-warn', 'bad' => 'tag-bad'];
       </tbody></table></div>
       <?php endif; ?>
     </section>
+
+    <?php if ($shipReady): ?>
+    <section class="card">
+      <h2>Did each order really go to Shiprocket?</h2>
+      <form method="get" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px">
+        <div class="field" style="margin:0"><label for="from">Orders from date</label><input id="from" type="date" name="from" value="<?= e($from) ?>"></div>
+        <button class="btn btn-ghost btn-sm" type="submit">Show</button>
+      </form>
+      <?php foreach ($act as [$lv, $t]): ?><div style="margin:6px 0"><span class="tag <?= e($cls[$lv]) ?>"><?= e(strtoupper($lv)) ?></span> <?= e($t) ?></div><?php endforeach; ?>
+      <?php $nSend = count(array_filter($shipRows, static fn($x) => $x[6] === 'send')); $nRetry = count(array_filter($shipRows, static fn($x) => $x[6] === 'retry')); ?>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;margin:8px 0">
+        <?php if ($nSend): ?><form method="post" onsubmit="return confirm('This creates REAL shipments in Shiprocket for up to 8 orders, one click at a time. Continue?');"><?= csrf_field() ?><input type="hidden" name="action" value="send"><input type="hidden" name="from" value="<?= e($from) ?>"><button class="btn btn-accent btn-sm" type="submit">Send <?= (int)$nSend ?> unsent orders to Shiprocket</button></form><?php endif; ?>
+        <?php if ($nRetry): ?><form method="post"><?= csrf_field() ?><input type="hidden" name="action" value="retry"><input type="hidden" name="from" value="<?= e($from) ?>"><button class="btn btn-accent btn-sm" type="submit">Retry <?= (int)$nRetry ?> failed</button></form><?php endif; ?>
+      </div>
+      <div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Order</th><th>Date</th><th>Status</th><th>Dealers</th><th>What happened</th><th></th></tr></thead><tbody>
+        <?php foreach ($shipRows as $x): ?><tr><td><a href="order_view.php?id=<?= (int)$x[0] ?>">#<?= (int)$x[0] ?></a></td><td><?= e($x[1]) ?></td><td><?= e($x[2]) ?></td><td><?= e($x[3]) ?></td>
+          <td><span class="tag <?= e($cls[$x[5]]) ?>"><?= e(strtoupper($x[5])) ?></span> <?= e($x[4]) ?></td>
+          <td><?php if ($x[6] !== ''): ?><form method="post"><?= csrf_field() ?><input type="hidden" name="action" value="<?= e($x[6]) ?>"><input type="hidden" name="order" value="<?= (int)$x[0] ?>"><input type="hidden" name="from" value="<?= e($from) ?>"><button class="btn btn-ghost btn-sm" type="submit"><?= $x[6] === 'send' ? 'Send' : 'Retry' ?></button></form><?php endif; ?></td></tr><?php endforeach; ?>
+      </tbody></table></div>
+      <div class="hint">"Send" never touches an order that already has a Shiprocket Order ID or AWB typed, so nothing is created twice.</div>
+    </section>
+    <?php endif; ?>
 
     <section class="card">
       <h2>Copy this and send it to me</h2>
