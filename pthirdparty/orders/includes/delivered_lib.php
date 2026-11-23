@@ -2,66 +2,96 @@
 // Matching for "Upload delivered list" (Shiprocket report or your own sheet).
 // A row is matched to an order by ANY of its ID columns, against: the tracking ID (AWB) saved on the order,
 // the Shiprocket Order ID saved on the order, or our own order number (#0168 / 168).
-// Every row of the list counts as delivered by default (it is a delivered list); only rows whose status clearly says
-// RTO / return / cancel / undelivered / lost, or says the parcel is still on its way (in transit, out for delivery...), are skipped.
+// If the file has a Status column only rows that say Delivered count (a full Shiprocket report also holds NEW ORDER, IN TRANSIT,
+// CANCELED, RTO ... rows). If it has none, it is a delivered list and every row counts.
 
-/** Cleans an ID read from a sheet: spaces, quotes, "123.0", and "1.68E+9" style numbers. */
+/**
+ * Cleans an ID read from a sheet: spaces, quotes, "123.0", and "1.68E+9" style numbers.
+ * A long number that Excel / the CSV turned into 1.9042E+13 has LOST its digits: it is returned as '' (unusable),
+ * unless the written digits are enough to give the full number back (1.680967393E+9 is exactly 1680967393).
+ */
 function dl_norm(string $v): string
 {
     $v = trim($v);
-    $v = str_replace(["\xC2\xA0", "\xE2\x80\x8B", ' ', "'", '"', '`'], '', $v);
+    $v = str_replace(["\xEF\xBB\xBF", "\xC2\xA0", "\xE2\x80\x8B", ' ', "'", '"', '`'], '', $v);
     if (preg_match('/^\d+\.0+$/', $v)) {
-        $v = preg_replace('/\.0+$/', '', $v);
-    } elseif (preg_match('/^\d+(\.\d+)?[eE]\+?\d+$/', $v)) {
-        $v = sprintf('%.0f', (float)$v); // a long number that Excel turned into 1.68096739E+9
+        return preg_replace('/\.0+$/', '', $v);
+    }
+    if (preg_match('/^(\d+)(?:\.(\d+))?[eE]\+?(\d+)$/', $v, $m)) {
+        $mantissaDigits = strlen($m[1] . ($m[2] ?? ''));
+        return $mantissaDigits >= (int)$m[3] + 1 ? sprintf('%.0f', (float)$v) : '';
     }
     return $v;
 }
 
-/** True when the status text says the parcel did NOT reach the customer. */
-function dl_bad_status(string $status): bool
+/**
+ * Why a row must NOT be marked delivered, or '' when it can be. Rule:
+ *   - the file has a Status column  -> only a status that says Delivered counts (a full Shiprocket report also holds NEW ORDER,
+ *     IN TRANSIT, OUT FOR DELIVERY, CANCELED, RTO ... rows, which must stay as they are)
+ *   - the file has no Status column -> it is a delivered list, every row counts
+ */
+function dl_skip_reason(?int $statusCol, string $status): string
 {
-    return $status !== '' && (bool)preg_match('/\b(rto|return(ed)?|cancel(l?ed)?|undeliver\w*|not\s+delivered|lost|damag\w*|failed|refus\w*|in\s*transit|out\s+for\s+delivery|picked(\s*up)?|pick\s*up|pending|shipped|dispatched|manifest\w*|awaiting|processing|ready\s+to\s+ship)\b/i', $status);
+    if ($statusCol === null) {
+        return '';
+    }
+    if (preg_match('/^\s*delivered\b/i', $status) && !preg_match('/\b(rto|undeliver\w*|not\s+delivered)\b/i', $status)) {
+        return '';
+    }
+    return $status === '' ? 'Status is empty, so it was not marked delivered.' : 'Status is "' . $status . '", not delivered.';
 }
 
-/** Finds the columns by their header names. Returns ['start' => first data row, 'order' => [cols], 'track' => [cols], 'status' => col|null, 'date' => col|null, 'names' => text]. */
+/** Excel column letter of a 0-based index: 0 = A, 25 = Z, 26 = AA. */
+function dl_col_letter(int $i): string
+{
+    $l = '';
+    for ($i++; $i > 0; $i = intdiv($i - 1, 26)) {
+        $l = chr(65 + ($i - 1) % 26) . $l;
+    }
+    return $l;
+}
+
+/**
+ * Finds the columns by their EXACT header names (a Shiprocket report has 127 columns, many with "order" or "awb" in the name,
+ * so loose matching would read the wrong ones). Returns ['start' => first data row, 'order' => [cols], 'track' => [cols],
+ * 'status' => col|null, 'date' => col|null, 'names' => text, 'header' => bool].
+ */
 function dl_detect_columns(array $rows): array
 {
-    $head = array_map(static fn($h) => strtolower(trim((string)$h)), $rows[0] ?? []);
+    $norm = static function ($h): string {
+        $h = strtolower(trim(str_replace("\xEF\xBB\xBF", '', (string)$h)));
+        return trim(preg_replace('/[\s_]+/', ' ', $h));
+    };
+    $head = array_map($norm, $rows[0] ?? []);
     $order = $track = [];
     $status = $date = null;
-    $hasHead = false;
     foreach ($head as $i => $h) {
         if ($h === '') {
             continue;
         }
-        if (preg_match('/status/', $h)) {
+        if (preg_match('/^(order |shipment |delivery |current )?status$/', $h)) {
             $status = $status ?? $i;
-            $hasHead = true;
-        } elseif (preg_match('/awb|tracking|waybill|way bill/', $h)) {
+        } elseif (preg_match('/^(awb( code| no\.?| number)?|tracking( id| no\.?| number| code)?|waybill( no\.?| number)?|way bill( no\.?)?|lr no\.?)$/', $h)) {
             $track[] = $i;
-            $hasHead = true;
-        } elseif (preg_match('/order|reference|ref no|ref\.?\s*id/', $h)) {
+        } elseif (preg_match('/^((shiprocket|channel|sr) )?order( id| no\.?| number)?$|^(reference|ref) (no\.?|number|id)$/', $h)) {
             $order[] = $i;
-            $hasHead = true;
-        } elseif (preg_match('/date|delivered/', $h)) {
+        } elseif (preg_match('/^((order|shipment|parcel) )?delivered( on| date| at| time)?$|^delivery date$/', $h)) {
             $date = $date ?? $i;
-            $hasHead = true;
         }
     }
-    if (!$hasHead) { // no header: A order number, B tracking ID, C status, D date
-        return ['start' => 0, 'order' => [0], 'track' => [1], 'status' => 2, 'date' => 3, 'names' => 'no header row: A = order number, B = tracking ID, C = status, D = date'];
-    }
-    $names = static function (array $cols) use ($rows): string {
-        return implode(', ', array_map(static fn($c) => '"' . trim((string)($rows[0][$c] ?? '')) . '"', $cols)) ?: 'none';
+    $label = static function (array $cols) use ($rows): string {
+        return implode(', ', array_map(static fn($c) => 'column ' . dl_col_letter($c) . ' "' . trim(str_replace("\xEF\xBB\xBF", '', (string)($rows[0][$c] ?? ''))) . '"', $cols)) ?: 'none';
     };
+    if (!$order && !$track) { // no header row: A order number, B tracking ID, C status, D date (the IDs are matched whichever way round they are)
+        return ['start' => 0, 'order' => [0], 'track' => [1], 'status' => 2, 'date' => 3, 'header' => false,
+                'names' => 'no header row found, so: column A = order number, column B = tracking ID, column C = status, column D = date'];
+    }
     return [
-        'start'  => 1,
-        'order'  => $order,
-        'track'  => $track,
-        'status' => $status,
-        'date'   => $date,
-        'names'  => 'order ID: ' . $names($order) . ' | tracking: ' . $names($track) . ' | status: ' . ($status !== null ? $names([$status]) : 'none (every row counts as delivered)') . ' | date: ' . ($date !== null ? $names([$date]) : 'none'),
+        'start'  => 1, 'header' => true,
+        'order'  => $order, 'track' => $track, 'status' => $status, 'date' => $date,
+        'names'  => 'Order ID: ' . $label($order) . ' | Tracking / AWB: ' . $label($track)
+                  . ' | Status: ' . ($status !== null ? $label([$status]) : 'none (every row counts as delivered)')
+                  . ' | Delivered date: ' . ($date !== null ? $label([$date]) : 'none'),
     ];
 }
 
