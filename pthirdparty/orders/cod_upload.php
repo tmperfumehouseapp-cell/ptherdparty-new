@@ -6,10 +6,13 @@ $user = require_admin();
 $pdo = db();
 
 require_once __DIR__ . '/includes/order_dealer_lib.php';
+require_once __DIR__ . '/includes/cod_report_lib.php';
 $accounts = $pdo->query('SELECT id, name FROM accounts WHERE is_active = 1 ORDER BY name')->fetchAll();
 $codDefault = default_cod_account_id($pdo); // COD money normally comes into your own QR
 $results = null;
 $summary = null;
+$colInfo = '';
+$groups = [];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
@@ -19,82 +22,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new RuntimeException('Choose the account the money came into.');
         }
         if (empty($_FILES['sheet']) || $_FILES['sheet']['error'] !== UPLOAD_ERR_OK) {
-            throw new RuntimeException('Choose an Excel (.xlsx) or CSV file to upload.');
+            throw new RuntimeException('Choose an Excel (.xls, .xlsx) or CSV file to upload.');
         }
         $rows = read_sheet_rows($_FILES['sheet']['tmp_name'], (string)$_FILES['sheet']['name']);
         if (!$rows) {
             throw new RuntimeException('The file is empty.');
         }
 
-        // find the columns: header names if present, else A = order or tracking ID, B = amount, C = date
-        $colId = 0;
-        $colAmt = 1;
-        $colDate = 2;
-        $start = 0;
-        $head = array_map('strtolower', $rows[0]);
-        $hasHead = false;
-        foreach ($head as $i => $h) {
-            if (preg_match('/order|awb|tracking|waybill/', $h)) {
-                $colId = $i;
-                $hasHead = true;
-            } elseif (preg_match('/amount|cod|collect|remit|paid/', $h)) {
-                $colAmt = $i;
-                $hasHead = true;
-            } elseif (preg_match('/date/', $h)) {
-                $colDate = $i;
-                $hasHead = true;
-            }
-        }
-        if ($hasHead) {
-            $start = 1;
-        } elseif (!preg_match('/\d/', (string)($rows[0][$colAmt] ?? ''))) {
-            $start = 1;
-        }
-
-        $byTrack = $pdo->prepare('SELECT id FROM orders WHERE tracking_id = ? LIMIT 1');
-        $byId = $pdo->prepare('SELECT id FROM orders WHERE id = ?');
-        $results = [];
-        $okCount = 0;
-        $okSum = 0.0;
-        for ($i = $start; $i < count($rows); $i++) {
-            $r = $rows[$i];
-            $ref = trim((string)($r[$colId] ?? ''));
-            $amt = num($r[$colAmt] ?? 0);
-            if ($ref === '' && $amt == 0) {
-                continue;
-            }
-            $date = sheet_date((string)($r[$colDate] ?? '')) ?? biz_today();
-            $line = ['row' => $i + 1, 'ref' => $ref, 'amount' => $amt, 'ok' => false, 'msg' => ''];
-
-            $orderId = null;
-            $byTrack->execute([$ref]);
-            $found = $byTrack->fetchColumn();
-            if ($found) {
-                $orderId = (int)$found;
-            } else {
-                $digits = (int)preg_replace('/\D+/', '', $ref);
-                if ($digits > 0) {
-                    $byId->execute([$digits]);
-                    $found = $byId->fetchColumn();
-                    $orderId = $found ? (int)$found : null;
-                }
-            }
-            if (!$orderId) {
-                $line['msg'] = 'No order with this ID or tracking ID.';
-            } else {
-                try {
-                    add_cod_receipt($pdo, $user, $orderId, $amt, $accId, $date, 'excel');
-                    $line['ok'] = true;
-                    $line['msg'] = 'Saved for order ' . order_no($orderId);
-                    $okCount++;
-                    $okSum += $amt;
-                } catch (RuntimeException $ex) {
-                    $line['msg'] = $ex->getMessage();
-                }
-            }
-            $results[] = $line;
-        }
-        $summary = ['ok' => $okCount, 'sum' => $okSum, 'bad' => count($results) - $okCount];
+        $res = cod_process_rows($pdo, $user, (int)$accId, $rows);
+        $colInfo = $res['colInfo'];
+        $results = $res['results'];
+        $groups = $res['groups'];
+        $okCount = $res['ok'];
+        $okSum = $res['sum'];
+        $notRemitted = $res['notRemitted'];
+        $delivCount = $res['delivered'];
+        $summary = ['ok' => $okCount, 'sum' => $okSum, 'bad' => count($results) - $okCount, 'notRemitted' => $notRemitted, 'delivered' => $delivCount];
     } catch (RuntimeException $ex) {
         flash('error', $ex->getMessage());
         redirect('cod_upload.php');
@@ -115,13 +58,30 @@ require __DIR__ . '/includes/header.php';
     <?php elseif (!$results): ?>
       <div class="empty">No rows found in the file.</div>
     <?php else: ?>
+      <?php if ($colInfo !== ''): ?><p class="hint" style="margin:0 0 10px">Columns read from your file: <?= e($colInfo) ?></p><?php endif; ?>
       <div class="stats" style="margin-bottom:14px">
         <div class="stat"><div class="k">Saved</div><div class="v pos"><?= (int)$summary['ok'] ?></div></div>
         <div class="stat"><div class="k">Money added</div><div class="v"><?= e(inr($summary['sum'])) ?></div></div>
         <div class="stat"><div class="k">Skipped</div><div class="v <?= $summary['bad'] ? 'neg' : '' ?>"><?= (int)$summary['bad'] ?></div></div>
+        <?php if ($summary['delivered'] > 0): ?><div class="stat"><div class="k">Also marked delivered</div><div class="v"><?= (int)$summary['delivered'] ?></div></div><?php endif; ?>
+        <?php if ($summary['notRemitted'] > 0): ?><div class="stat"><div class="k">Not remitted yet</div><div class="v"><?= (int)$summary['notRemitted'] ?></div><div class="mini">no COD money in the file for these</div></div><?php endif; ?>
       </div>
+      <?php if (count($groups) > 1 || (count($groups) === 1 && key($groups) !== '-')): ?>
+      <h3 style="margin:0 0 8px">By remittance (match these with your bank)</h3>
+      <div class="table-wrap" style="margin-bottom:16px"><table class="tight" style="min-width:560px">
+        <thead><tr><th>CRF ID</th><th>UTR</th><th>Date</th><th class="num">Parcels</th><th class="num">Saved</th><th class="num">Skipped</th><th class="num">Money in file</th><th class="num">Money saved</th></tr></thead>
+        <tbody>
+        <?php foreach ($groups as $g): ?>
+          <tr><td><?= e($g['crf'] !== '' ? $g['crf'] : '-') ?></td><td><?= e($g['utr'] !== '' ? $g['utr'] : '-') ?></td><td><?= e(date('d M Y', strtotime($g['date']))) ?></td>
+            <td class="num"><?= (int)$g['rows'] ?></td><td class="num"><?= (int)$g['saved'] ?></td><td class="num"><?= $g['skipped'] ? '<span class="tag tag-bad">' . (int)$g['skipped'] . '</span>' : '0' ?></td>
+            <td class="num"><?= e(inr($g['in_file'])) ?></td><td class="num" style="font-weight:800"><?= e(inr($g['saved_amt'])) ?></td></tr>
+        <?php endforeach; ?>
+        </tbody>
+      </table></div>
+      <h3 style="margin:0 0 8px">Every row</h3>
+      <?php endif; ?>
       <div class="table-wrap"><table class="tight" style="min-width:480px">
-        <thead><tr><th>Row</th><th>Order / tracking ID</th><th class="num">Amount</th><th>Result</th></tr></thead>
+        <thead><tr><th>Row</th><th>AWB / order ID</th><th class="num">Amount</th><th>Result</th></tr></thead>
         <tbody>
         <?php foreach ($results as $r): ?>
           <tr><td><?= (int)$r['row'] ?></td><td><?= e($r['ref']) ?></td><td class="num"><?= e(inr($r['amount'])) ?></td>
@@ -140,12 +100,15 @@ require __DIR__ . '/includes/header.php';
         <select id="account_id" name="account_id" required>
           <?php foreach ($accounts as $a): ?><option value="<?= (int)$a['id'] ?>"<?= (int)$a['id'] === $codDefault ? ' selected' : '' ?>><?= e($a['name']) ?></option><?php endforeach; ?>
         </select></div>
-      <div class="field"><label for="sheet">Excel (.xlsx) or CSV file</label><input id="sheet" name="sheet" type="file" accept=".xlsx,.csv" required style="width:100%"></div>
+      <div class="field"><label for="sheet">Excel (.xls, .xlsx) or CSV file</label><input id="sheet" name="sheet" type="file" accept=".xls,.xlsx,.csv" required style="width:100%"></div>
       <button class="btn btn-accent btn-block" type="submit">Upload and save</button>
     </form>
     <div class="sheet-note" style="margin-top:14px">
-      Columns: <b>A</b> order number or tracking ID, <b>B</b> amount received, <b>C</b> date (optional). A header row is fine.
-      Rows for orders that are not COD, already fully received, or more than pending are skipped and explained.
+      Upload <b>Shiprocket's COD report exactly as you download it</b> (.xls, .xlsx or .csv), no editing. Columns are found by their names:
+      <b>AWB</b> and <b>Order Id</b> (to find the order), <b>Order Value</b> / <b>Remitted Amount</b> (the COD money), <b>Remittance Date</b>, <b>CRF ID</b>, <b>UTR</b>, <b>Delivered Date</b>.
+      The COD <i>charge</i> column ("COD Payble Amount") is never used as money. Without a header row: A order number or tracking ID, B amount, C date.
+      Rows for orders that are not COD, already fully received, or more than pending are skipped and explained. A parcel still showing created / dispatched is marked delivered when its COD money is saved.
+      Uploading the same report again is safe: money already saved is not counted twice.
     </div>
   </section>
 </div>
