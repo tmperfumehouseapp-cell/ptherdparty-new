@@ -50,7 +50,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$rows) {
             throw new RuntimeException('The file is empty.');
         }
-        $res = cod_process_rows($pdo, $user, (int)$accId, $rows);
+        $res = cod_process_rows($pdo, $user, (int)$accId, $rows, valid_date((string)($_POST['remit_date'] ?? '')));
         $withoutSr = dl_orders_without_sr($pdo, 'cod_pending');
     } catch (RuntimeException $ex) {
         flash('error', $ex->getMessage());
@@ -141,6 +141,8 @@ require __DIR__ . '/includes/header.php';
         <select id="account_id" name="account_id" required>
           <?php foreach ($accounts as $a): ?><option value="<?= (int)$a['id'] ?>"<?= (int)$a['id'] === $usedAcc ? ' selected' : '' ?>><?= e($a['name']) ?></option><?php endforeach; ?>
         </select></div>
+      <div class="field"><label for="remit_date">Remittance date (only if the file has none)</label><input id="remit_date" name="remit_date" type="date" style="width:100%">
+        <div class="hint">Shiprocket's "AWB Reconciliation" export has no payment date. Type the date Shiprocket paid that remittance (the date on its COD Remittance page, for example 12 Nov). A file that has its own Remittance Date column ignores this box.</div></div>
       <div class="field"><label for="sheet">Shiprocket COD report (.xls, .xlsx or .csv)</label><input id="sheet" name="sheet" type="file" accept=".xls,.xlsx,.csv" required style="width:100%"></div>
       <button class="btn btn-accent btn-block" type="submit">Upload and save</button>
     </form>
