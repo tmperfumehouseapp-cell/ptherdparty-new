@@ -5,6 +5,7 @@ require __DIR__ . '/includes/ops_lib.php';
 require_once __DIR__ . '/includes/simple_lib.php';
 require_once __DIR__ . '/includes/cod_sr_lib.php';
 require_once __DIR__ . '/includes/orders_lib.php';
+require_once __DIR__ . '/includes/cod_entry_lib.php';
 $user = require_admin();
 $pdo = db();
 
@@ -26,11 +27,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($action === 'delete') {
             delete_remittance($pdo, (int)($_POST['id'] ?? 0));
             flash('ok', 'Entry deleted.');
+        } elseif ($action === 'del_entry') { // manager only (this page is), order COD entry or lump remittance
+            if (($_POST['kind'] ?? '') === 'lump') {
+                delete_remittance($pdo, (int)($_POST['id'] ?? 0));
+                flash('ok', 'COD remittance deleted.');
+            } else {
+                flash('ok', cod_receipt_delete($pdo, $user, (int)($_POST['id'] ?? 0)));
+            }
+        } elseif ($action === 'edit_entry') {
+            $amt = num($_POST['amount'] ?? 0);
+            $dt = valid_date((string)($_POST['entry_date'] ?? '')) ?? '';
+            if ($dt === '') {
+                throw new RuntimeException('Choose a valid date.');
+            }
+            if (($_POST['kind'] ?? '') === 'lump') {
+                flash('ok', cod_lump_edit($pdo, $user, (int)($_POST['id'] ?? 0), $amt, $dt, (int)($_POST['account_id'] ?? 0), trim((string)($_POST['note'] ?? ''))));
+            } else {
+                flash('ok', cod_receipt_edit($pdo, $user, (int)($_POST['id'] ?? 0), $amt, $dt, (int)($_POST['account_id'] ?? 0)));
+            }
         }
     } catch (RuntimeException $ex) {
         flash('error', $ex->getMessage());
     }
-    redirect('cod_amount.php');
+    $bf = valid_date((string)($_POST['from'] ?? ''));
+    $bt = valid_date((string)($_POST['to'] ?? ''));
+    $bv = in_array((string)($_POST['view'] ?? ''), ['received', 'delivered', 'way'], true) ? (string)$_POST['view'] : '';
+    redirect('cod_amount.php' . ($bf && $bt ? '?' . http_build_query(array_filter(['from' => $bf, 'to' => $bt, 'view' => $bv])) : ''));
 }
 
 $today = biz_today();
@@ -205,14 +227,34 @@ require __DIR__ . '/includes/header.php';
       <button class="btn btn-ghost btn-sm" type="submit"><?= $assume ? 'Turn off' : 'Turn on' ?></button></form>
     <h3 style="margin:22px 0 4px;font-size:15px">What you entered in the panel (for comparison)</h3>
   <?php endif; ?>
-  <?php if (!$days): ?>
+  <?php $ents = cod_entries($pdo, $from, $to); $byDay = []; foreach ($ents as $en) { $byDay[$en['d']][] = $en; } ?>
+  <?php if (!$ents): ?>
     <div class="empty">No COD money received in these dates.</div>
   <?php else: ?>
+  <div class="hint" style="margin:0 0 6px">Click a date to see each entry. You can change or delete an entry here: the order's COD balance, your account and the dealer figures follow.</div>
   <div class="cd">
-    <?php foreach ($days as $d): ?>
-    <div class="r"><span><?= e(date('D, d M Y', strtotime($d['d']))) ?><small><?= (int)$d['n'] ?> entr<?= (int)$d['n'] === 1 ? 'y' : 'ies' ?></small></span><b class="pos"><?= e(inr($d['amount'])) ?></b></div>
+    <?php foreach ($byDay as $dd => $list): $sum = array_sum(array_column($list, 'amount')); ?>
+    <details class="r" style="display:block"<?= $from === $to ? ' open' : '' ?>><summary style="display:flex;justify-content:space-between;gap:12px;cursor:pointer;list-style:none"><span><?= e(date('D, d M Y', strtotime($dd))) ?><small><?= count($list) ?> entr<?= count($list) === 1 ? 'y' : 'ies' ?></small></span><b class="pos"><?= e(inr($sum)) ?></b></summary>
+      <?php foreach ($list as $en): ?>
+      <div class="ent" style="display:block">
+        <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap">
+          <div><?php if ($en['kind'] === 'order'): ?><a href="order_view.php?id=<?= (int)$en['order_id'] ?>"><?= e(order_no($en['order_id'])) ?></a><?= $en['name'] !== '' ? ' · ' . e($en['name']) : '' ?><?php else: ?>COD remittance<?= $en['note'] !== '' ? ' · ' . e(cod_lump_note($en['note'])) : '' ?><?php endif; ?>
+            <span class="mini"><?= e($en['account']) ?><?= $en['source'] === 'excel' ? ' · from Excel' : '' ?></span></div>
+          <div style="display:flex;gap:6px;align-items:center"><b><?= e(inr($en['amount'])) ?></b>
+            <button class="btn btn-ghost btn-sm" type="button" onclick="var f=document.getElementById('ed<?= e($en['kind']) ?><?= (int)$en['id'] ?>');f.style.display=f.style.display==='none'?'flex':'none'">Edit</button>
+            <form method="post" style="display:inline" onsubmit="return confirm('Delete this COD entry of <?= e(inr($en['amount'])) ?>?');"><?= csrf_field() ?><input type="hidden" name="action" value="del_entry"><input type="hidden" name="kind" value="<?= e($en['kind']) ?>"><input type="hidden" name="id" value="<?= (int)$en['id'] ?>"><input type="hidden" name="from" value="<?= e($from) ?>"><input type="hidden" name="to" value="<?= e($to) ?>"><button class="btn btn-ghost btn-sm" type="submit">Delete</button></form></div>
+        </div>
+        <form method="post" id="ed<?= e($en['kind']) ?><?= (int)$en['id'] ?>" style="display:none;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:8px"><?= csrf_field() ?><input type="hidden" name="action" value="edit_entry"><input type="hidden" name="kind" value="<?= e($en['kind']) ?>"><input type="hidden" name="id" value="<?= (int)$en['id'] ?>"><input type="hidden" name="from" value="<?= e($from) ?>"><input type="hidden" name="to" value="<?= e($to) ?>">
+          <div class="field" style="margin:0"><label>Amount (₹)</label><input name="amount" type="text" inputmode="decimal" value="<?= e(rtrim(rtrim(number_format((float)$en['amount'], 2, '.', ''), '0'), '.')) ?>" style="width:120px"></div>
+          <div class="field" style="margin:0"><label>Date</label><input name="entry_date" type="date" value="<?= e($en['d']) ?>"></div>
+          <div class="field" style="margin:0"><label>Account</label><select name="account_id"><?php foreach ($accounts as $a): ?><option value="<?= (int)$a['id'] ?>"<?= (int)$a['id'] === (int)$en['account_id'] ? ' selected' : '' ?>><?= e($a['name']) ?></option><?php endforeach; ?></select></div>
+          <?php if ($en['kind'] === 'lump'): ?><div class="field" style="margin:0"><label>Note</label><input name="note" type="text" value="<?= e(cod_lump_note($en['note'])) ?>"></div><?php endif; ?>
+          <button class="btn btn-accent btn-sm" type="submit">Save</button></form>
+      </div>
+      <?php endforeach; ?>
+    </details>
     <?php endforeach; ?>
-    <div class="r tot"><span>Total</span><b><?= e(inr($received)) ?></b></div>
+    <div class="r tot"><span>Total</span><b><?= e(inr(array_sum(array_column($ents, 'amount')))) ?></b></div>
   </div>
   <?php endif; ?>
 </section>
@@ -235,19 +277,6 @@ require __DIR__ . '/includes/header.php';
   <p style="margin:12px 0 0"><a class="btn btn-ghost btn-sm linkbtn" href="cod_upload.php">Upload COD from Excel</a></p>
 </details>
 
-<?php if ($manual): ?>
-<details class="card" style="margin-top:16px">
-  <summary style="cursor:pointer;font-size:15px;font-weight:800">Entries added by hand (last <?= count($manual) ?>)</summary>
-  <div style="margin-top:8px">
-    <?php foreach ($manual as $m): ?>
-    <div class="ent">
-      <div><?= e(date('d M Y', strtotime($m['entry_date']))) ?> · <b><?= e(inr($m['amount'])) ?></b><span class="mini"><?= e($m['account']) ?><?= $m['note'] ? ' · ' . e($m['note']) : '' ?></span></div>
-      <form method="post" onsubmit="return confirm('Delete this entry?');"><?= csrf_field() ?><input type="hidden" name="action" value="delete"><input type="hidden" name="id" value="<?= (int)$m['id'] ?>"><button class="btn btn-ghost btn-sm" type="submit">Delete</button></form>
-    </div>
-    <?php endforeach; ?>
-  </div>
-</details>
-<?php endif; ?>
 <script>
 (function () {
   var f = document.getElementById('codform');
