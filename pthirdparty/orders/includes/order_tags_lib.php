@@ -186,6 +186,24 @@ function order_tag_dates(array $r, ?string $today = null): ?array
     return $parts ? ['text' => implode(' · ', $parts), 'late' => $late] : null;
 }
 
+/**
+ * Setting "delivered = COD already received": the manager says the COD money of every delivered parcel has already reached the QR / account,
+ * so delivered COD orders are treated as received (no "COD pending / initiated / remitted" for them). On by default; stored in sr_connect.
+ */
+function srs_delivered_paid(PDO $pdo): bool
+{
+    require_once __DIR__ . '/sr_connect_lib.php';
+    try {
+        sr_conn_ensure($pdo);
+        $v = sr_conn_get($pdo, 'cod_delivered_paid');
+        $on = $v === null ? true : $v === '1';
+    } catch (Throwable $e) {
+        $on = false;
+    }
+    $GLOBALS['srs_delivered_paid'] = $on;
+    return $on;
+}
+
 /* ---------- the rules as SQL (alias o = orders) ---------- */
 
 function order_tag_exprs(): array
@@ -211,16 +229,18 @@ function order_tag_sql(string $tag): ?string
     $open = "o.status IN ('created','dispatched')";
     $cod = "o.payment_mode = 'cod' AND o.status <> 'refunded'";
     $notCancelled = "NOT {$x['cancel']}";
+    $paid = !empty($GLOBALS['srs_delivered_paid']);
+    $notDel = $paid ? " AND o.status <> 'delivered'" : '';
     switch ($tag) {
         case 'delivered':     return "o.status = 'delivered'";
         case 'transit':       return "($open AND {$x['transit']} AND $notCancelled)";
         case 'notshipped':    return "($open AND {$x['new']} AND NOT {$x['transit']} AND $notCancelled)";
         case 'cancelled':     return "(o.status = 'refunded' OR ($open AND {$x['cancel']}))";
         case 'nodata':        return "($open AND {$x['stat']} = '')";
-        case 'cod_received':  return "($cod AND {$x['bal']} <= 0.004)";
-        case 'cod_remitted':  return "($cod AND {$x['bal']} > 0.004 AND {$x['utr']} <> '')";
-        case 'cod_initiated': return "($cod AND {$x['bal']} > 0.004 AND {$x['utr']} = '' AND {$x['crf']} <> '')";
-        case 'cod_pending':   return "($cod AND o.status = 'delivered' AND {$x['bal']} > 0.004 AND {$x['utr']} = '' AND {$x['crf']} = '')";
+        case 'cod_received':  return "($cod AND ({$x['bal']} <= 0.004" . ($paid ? " OR o.status = 'delivered'" : '') . '))';
+        case 'cod_remitted':  return "($cod AND {$x['bal']} > 0.004 AND {$x['utr']} <> ''$notDel)";
+        case 'cod_initiated': return "($cod AND {$x['bal']} > 0.004 AND {$x['utr']} = '' AND {$x['crf']} <> ''$notDel)";
+        case 'cod_pending':   return "($cod AND o.status = 'delivered' AND {$x['bal']} > 0.004 AND {$x['utr']} = '' AND {$x['crf']} = ''$notDel)";
     }
     return null;
 }
@@ -273,8 +293,9 @@ function order_tag_list(array $r): array
         $bal = (float)$r['total'] - (float)$r['advance_amount'] - (float)$r['cod_received'];
         $utr = trim((string)($r['sr_utr'] ?? ''));
         $crf = trim((string)($r['sr_crf'] ?? ''));
-        if ($bal <= 0.004) {
-            $out[] = ['COD received', 'tag-ok', ''];
+        $paidMode = !empty($GLOBALS['srs_delivered_paid']) && $st === 'delivered';
+        if ($bal <= 0.004 || $paidMode) {
+            $out[] = ['COD received', 'tag-ok', $bal > 0.004 ? 'Delivered: counted as received (setting on the COD Amount page)' : ''];
         } elseif ($utr !== '') {
             $out[] = ['COD remitted: enter it', 'tag-info', 'Shiprocket paid it (UTR ' . $utr . '). It is not entered on this order yet.'];
         } elseif ($crf !== '') {

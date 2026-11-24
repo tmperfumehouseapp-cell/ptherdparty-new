@@ -21,7 +21,7 @@ function cod_sr_exprs(): array
  *   'undated' => [n, amount] (paid, but the report had no remittance date), 'panel' => how many of the paid parcels are panel orders].
  * Source: every payout line of the uploaded reports (sr_remit), plus panel orders whose payout was saved the older way (sr_status) and are not in sr_remit.
  */
-function cod_sr_received(PDO $pdo, string $from, string $to): array
+function cod_sr_received(PDO $pdo, string $from, string $to, bool $assumeDelivered = false): array
 {
     $lines = $pdo->prepare(
         "SELECT r.remit_date AS d, COALESCE(r.utr, '') AS utr, COALESCE(r.crf, '') AS crf, r.amount AS amount, r.order_id AS order_id, r.ref AS ref, COALESCE(r.awb, '') AS awb, COALESCE(o.customer_name, '') AS name
@@ -32,11 +32,29 @@ function cod_sr_received(PDO $pdo, string $from, string $to): array
          WHERE o.payment_mode = 'cod' AND s.remit_date BETWEEN ? AND ? AND NOT EXISTS (SELECT 1 FROM sr_remit r WHERE r.order_id = s.order_id)"
     );
     $lines->execute([$from, $to, $from, $to]);
+    $rows = $lines->fetchAll();
+    $assumed = ['n' => 0, 'amount' => 0.0];
+    if ($assumeDelivered) { // delivered COD parcels with no payout line: the money is taken as already in the account, dated by the delivery day
+        $e = cod_sr_exprs();
+        $srId = function_exists('orders_has_sr_id') && orders_has_sr_id($pdo) ? "COALESCE(o.shiprocket_order_id, '')" : "''";
+        $q = $pdo->prepare(
+            "SELECT SUBSTR(o.delivered_at, 1, 10) AS d, '' AS utr, '' AS crf, {$e['amt']} AS amount, o.id AS order_id, $srId AS ref, COALESCE(o.tracking_id, '') AS awb, COALESCE(o.customer_name, '') AS name
+             FROM orders o WHERE o.payment_mode = 'cod' AND o.status = 'delivered' AND NOT {$e['remitted']} AND NOT {$e['dead']}
+               AND o.delivered_at IS NOT NULL AND SUBSTR(o.delivered_at, 1, 10) BETWEEN ? AND ?"
+        );
+        $q->execute([$from, $to]);
+        foreach ($q->fetchAll() as $r) {
+            $r['assumed'] = true;
+            $rows[] = $r;
+            $assumed['n']++;
+            $assumed['amount'] += (float)$r['amount'];
+        }
+    }
     $days = [];
     $total = 0.0;
     $orders = 0;
     $panel = 0;
-    foreach ($lines->fetchAll() as $r) {
+    foreach ($rows as $r) {
         $d = (string)$r['d'];
         $days[$d] = $days[$d] ?? ['d' => $d, 'n' => 0, 'amount' => 0.0, 'g' => [], 'lines' => []];
         $k = $r['utr'] . '|' . $r['crf'];
@@ -44,7 +62,7 @@ function cod_sr_received(PDO $pdo, string $from, string $to): array
         $days[$d]['g'][$k]['n']++;
         $days[$d]['g'][$k]['amount'] += (float)$r['amount'];
         $days[$d]['lines'][] = ['order_id' => $r['order_id'] !== null ? (int)$r['order_id'] : null, 'name' => (string)$r['name'], 'ref' => (string)$r['ref'], 'awb' => (string)$r['awb'],
-                                'utr' => (string)$r['utr'], 'crf' => (string)$r['crf'], 'amount' => (float)$r['amount']];
+                                'utr' => (string)$r['utr'], 'crf' => (string)$r['crf'], 'amount' => (float)$r['amount'], 'assumed' => !empty($r['assumed'])];
         $days[$d]['n']++;
         $days[$d]['amount'] += (float)$r['amount'];
         $total += (float)$r['amount'];
@@ -60,14 +78,14 @@ function cod_sr_received(PDO $pdo, string $from, string $to): array
     }
     unset($day);
     $u = $pdo->query("SELECT COUNT(*) AS n, COALESCE(SUM(amount), 0) AS amount FROM sr_remit WHERE remit_date IS NULL")->fetch();
-    return ['days' => array_values($days), 'total' => round($total, 2), 'orders' => $orders, 'panel' => $panel, 'undated' => ['n' => (int)$u['n'], 'amount' => round((float)$u['amount'], 2)]];
+    return ['days' => array_values($days), 'total' => round($total, 2), 'orders' => $orders, 'panel' => $panel, 'assumed' => ['n' => $assumed['n'], 'amount' => round($assumed['amount'], 2)], 'undated' => ['n' => (int)$u['n'], 'amount' => round((float)$u['amount'], 2)]];
 }
 
 /**
  * What Shiprocket still has to pay, from COD orders it has not remitted (cancelled / returned ones are left out):
  * delivered_initiated (remittance made, not paid yet), delivered_waiting (nothing yet) and on_the_way (not delivered yet). Each [n, amount].
  */
-function cod_sr_pending(PDO $pdo): array
+function cod_sr_pending(PDO $pdo, bool $assumeDelivered = false): array
 {
     $e = cod_sr_exprs();
     $base = "o.payment_mode = 'cod' AND NOT {$e['remitted']} AND NOT {$e['dead']}";
@@ -81,7 +99,7 @@ function cod_sr_pending(PDO $pdo): array
         'on_the_way'          => $one("NOT {$e['delivered']} AND o.status IN ('created','dispatched')"),
     ];
     $out['total'] = ['n' => 0, 'amount' => 0.0];
-    foreach (['delivered_initiated', 'delivered_waiting', 'on_the_way'] as $k) {
+    foreach ($assumeDelivered ? ['on_the_way'] : ['delivered_initiated', 'delivered_waiting', 'on_the_way'] as $k) { // delivered parcels count as received when the setting is on
         $out['total']['n'] += $out[$k]['n'];
         $out['total']['amount'] = round($out['total']['amount'] + $out[$k]['amount'], 2);
     }
