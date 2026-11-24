@@ -3,6 +3,7 @@
 require __DIR__ . '/includes/bootstrap.php';
 require __DIR__ . '/includes/ops_lib.php';
 require_once __DIR__ . '/includes/simple_lib.php';
+require_once __DIR__ . '/includes/cod_sr_lib.php';
 $user = require_admin();
 $pdo = db();
 
@@ -47,6 +48,20 @@ $received = 0.0;
 foreach ($days as $d) {
     $received += (float)$d['amount'];
 }
+// Shiprocket's own COD figures (UTR / remittance date), saved from its reports; the panel's hand-entered figures stay below for comparison
+$srOk = false;
+$sr = ['days' => [], 'total' => 0.0, 'orders' => 0, 'undated' => ['n' => 0, 'amount' => 0.0]];
+$sp = null;
+$cov = ['delivered' => 0, 'remitted' => 0, 'any' => 0];
+try {
+    srs_ensure($pdo);
+    $sr = cod_sr_received($pdo, $from, $to);
+    $sp = cod_sr_pending($pdo);
+    $cov = cod_sr_coverage($pdo);
+    $srOk = true;
+} catch (Throwable $ex) {
+    $srOk = false;
+}
 $first = $pdo->query("SELECT MIN(d) FROM (SELECT MIN(received_date) AS d FROM cod_receipts UNION ALL SELECT MIN(entry_date) FROM account_ledger WHERE entry_type = 'cod') x")->fetchColumn() ?: $today;
 
 require_once __DIR__ . '/includes/order_dealer_lib.php';
@@ -85,14 +100,25 @@ require __DIR__ . '/includes/header.php';
 </style>
 
 <div class="ct">
+  <?php if ($srOk): ?>
+  <div class="stat"><div class="k">COD received <span class="mini">(Shiprocket paid)</span></div><div class="v pos"><?= e(inr($sr['total'])) ?></div>
+    <div class="mini"><?= (int)$sr['orders'] ?> order<?= $sr['orders'] === 1 ? '' : 's' ?> · <?= e($from === $to ? date('d M Y', strtotime($from)) : date('d M', strtotime($from)) . ' to ' . date('d M Y', strtotime($to))) ?></div>
+    <div class="mini">Entered in the panel in these dates: <b><?= e(inr($received)) ?></b><?= abs($sr['total'] - $received) > 0.5 ? ' · difference ' . e(inr(abs($sr['total'] - $received))) . ($sr['total'] > $received ? ' (not entered yet)' : '') : ' · matches' ?></div></div>
+  <div class="stat"><div class="k">COD pending <span class="mini">(Shiprocket still to pay)</span></div><div class="v" style="<?= $sp['total']['amount'] > 0.004 ? 'color:#B45309' : '' ?>"><?= e(inr($sp['total']['amount'])) ?></div>
+    <div class="mini"><?= (int)$sp['total']['n'] ?> order<?= $sp['total']['n'] === 1 ? '' : 's' ?> waiting</div>
+    <div class="mini"><a class="rowlink" href="orders.php?tag=cod_pending">Delivered, nothing yet</a>: <b><?= e(inr($sp['delivered_waiting']['amount'])) ?></b> (<?= (int)$sp['delivered_waiting']['n'] ?>)
+      · <a class="rowlink" href="orders.php?tag=cod_initiated">Initiated</a>: <b><?= e(inr($sp['delivered_initiated']['amount'])) ?></b> (<?= (int)$sp['delivered_initiated']['n'] ?>)
+      · <a class="rowlink" href="orders.php?tag=transit">On the way</a>: <b><?= e(inr($sp['on_the_way']['amount'])) ?></b> (<?= (int)$sp['on_the_way']['n'] ?>)</div></div>
+  <?php else: ?>
   <div class="stat"><div class="k">Pending COD amount</div><div class="v" style="<?= $pending['due'] > 0.004 ? 'color:#B45309' : '' ?>"><?= e(inr($pending['due'])) ?></div>
     <div class="mini"><?= ($pending['due'] > 0.004 && $pending['orders']) ? (int)$pending['orders'] . ' order' . ($pending['orders'] === 1 ? '' : 's') . ' waiting · ' : '' ?><a class="rowlink" href="orders.php?mode=cod_due">see which</a></div></div>
   <div class="stat"><div class="k">COD received</div><div class="v pos"><?= e(inr($received)) ?></div>
     <div class="mini"><?= e($from === $to ? date('d M Y', strtotime($from)) : date('d M', strtotime($from)) . ' to ' . date('d M Y', strtotime($to))) ?></div></div>
+  <?php endif; ?>
 </div>
 
 <section class="card">
-  <h2>COD received, date by date</h2>
+  <h2>COD received<?= $srOk ? ' by Shiprocket' : '' ?>, date by date</h2>
   <form method="get" class="filters">
     <div><label for="from">From</label><input id="from" name="from" type="date" value="<?= e($from) ?>" <?= $dateInput ?>></div>
     <div><label for="to">To</label><input id="to" name="to" type="date" value="<?= e($to) ?>" <?= $dateInput ?>></div>
@@ -105,6 +131,29 @@ require __DIR__ . '/includes/header.php';
     <?= $chip('This month', date('Y-m-01', strtotime($today)), $today) ?>
     <?= $chip('All time', $first, $today) ?>
   </div>
+  <?php if ($srOk): ?>
+    <?php if ($cov['any'] === 0): ?>
+      <div class="hint" style="margin:0 0 12px">The panel has no Shiprocket payout information yet. Upload Shiprocket's all-orders report (or the COD remittance report) on <a href="delivered_upload.php">Upload delivered CSV</a>: it has the UTR number, remittance date and remitted amount, and this page fills by itself.</div>
+    <?php else: ?>
+      <div class="hint" style="margin:0 0 12px">Shiprocket payout information is on <b><?= (int)$cov['remitted'] ?></b> of <b><?= (int)$cov['delivered'] ?></b> delivered COD orders. If that is low, upload the latest Shiprocket report. Amounts are what Shiprocket remitted (after its COD charge); where the report has no amount, the order's COD amount is used.</div>
+    <?php endif; ?>
+    <?php if ($sr['undated']['n'] > 0): ?><div class="hint" style="margin:0 0 12px"><?= (int)$sr['undated']['n'] ?> paid orders (<?= e(inr($sr['undated']['amount'])) ?>) have a UTR but no remittance date in the report, so they are not in a date below.</div><?php endif; ?>
+    <?php if (!$sr['days']): ?>
+      <div class="empty">Shiprocket has paid nothing in these dates.</div>
+    <?php else: ?>
+    <div class="cd">
+      <?php foreach ($sr['days'] as $d): ?>
+      <details class="r" style="display:block"><summary style="display:flex;justify-content:space-between;gap:12px;cursor:pointer;list-style:none"><span><?= e(date('D, d M Y', strtotime($d['d']))) ?><small><?= (int)$d['n'] ?> order<?= (int)$d['n'] === 1 ? '' : 's' ?></small></span><b class="pos"><?= e(inr($d['amount'])) ?></b></summary>
+        <div style="margin-top:6px">
+          <?php foreach ($d['groups'] as $g): ?><div class="mini" style="display:flex;justify-content:space-between;gap:10px;font-weight:600"><span>UTR <?= e($g['utr'] !== '' ? $g['utr'] : '-') ?><?= $g['crf'] !== '' ? ' · CRF ' . e($g['crf']) : '' ?> · <?= (int)$g['n'] ?> order<?= $g['n'] === 1 ? '' : 's' ?></span><span><?= e(inr($g['amount'])) ?></span></div><?php endforeach; ?>
+        </div>
+      </details>
+      <?php endforeach; ?>
+      <div class="r tot"><span>Total</span><b><?= e(inr($sr['total'])) ?></b></div>
+    </div>
+    <?php endif; ?>
+    <h3 style="margin:22px 0 4px;font-size:15px">What you entered in the panel (for comparison)</h3>
+  <?php endif; ?>
   <?php if (!$days): ?>
     <div class="empty">No COD money received in these dates.</div>
   <?php else: ?>
