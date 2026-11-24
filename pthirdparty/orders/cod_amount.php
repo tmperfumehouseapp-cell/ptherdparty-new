@@ -4,6 +4,7 @@ require __DIR__ . '/includes/bootstrap.php';
 require __DIR__ . '/includes/ops_lib.php';
 require_once __DIR__ . '/includes/simple_lib.php';
 require_once __DIR__ . '/includes/cod_sr_lib.php';
+require_once __DIR__ . '/includes/orders_lib.php';
 $user = require_admin();
 $pdo = db();
 
@@ -62,6 +63,14 @@ try {
 } catch (Throwable $ex) {
     $srOk = false;
 }
+$view = (string)($_GET['view'] ?? 'received');
+if (!in_array($view, ['received', 'delivered', 'way'], true) || !$srOk) {
+    $view = 'received';
+}
+$plist = [];
+if ($srOk && $view !== 'received') {
+    $plist = cod_sr_pending_lines($pdo, $view, orders_has_sr_id($pdo));
+}
 $first = $pdo->query("SELECT MIN(d) FROM (SELECT MIN(received_date) AS d FROM cod_receipts UNION ALL SELECT MIN(entry_date) FROM account_ledger WHERE entry_type = 'cod') x")->fetchColumn() ?: $today;
 
 require_once __DIR__ . '/includes/order_dealer_lib.php';
@@ -117,6 +126,33 @@ require __DIR__ . '/includes/header.php';
   <?php endif; ?>
 </div>
 
+<?php if ($srOk):
+    $vq = static fn(string $v) => 'cod_amount.php?' . http_build_query(['view' => $v, 'from' => $from, 'to' => $to]);
+    $notRecv = $sp['delivered_waiting']['n'] + $sp['delivered_initiated']['n'];
+    $notRecvAmt = $sp['delivered_waiting']['amount'] + $sp['delivered_initiated']['amount'];
+?>
+<div style="display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px">
+  <a class="btn btn-sm linkbtn <?= $view === 'received' ? 'btn-accent' : 'btn-ghost' ?>" href="<?= e($vq('received')) ?>">COD received in my account · <?= e(inr($sr['total'])) ?></a>
+  <a class="btn btn-sm linkbtn <?= $view === 'delivered' ? 'btn-accent' : 'btn-ghost' ?>" href="<?= e($vq('delivered')) ?>">Delivered, COD not received yet · <?= (int)$notRecv ?> · <?= e(inr($notRecvAmt)) ?></a>
+  <a class="btn btn-sm linkbtn <?= $view === 'way' ? 'btn-accent' : 'btn-ghost' ?>" href="<?= e($vq('way')) ?>">Still on the way · <?= (int)$sp['on_the_way']['n'] ?> · <?= e(inr($sp['on_the_way']['amount'])) ?></a>
+</div>
+<?php endif; ?>
+
+<?php if ($srOk && $view !== 'received'): ?>
+<section class="card">
+  <h2><?= $view === 'delivered' ? 'Delivered, COD not received yet' : 'Still on the way (COD comes after delivery)' ?></h2>
+  <div class="hint" style="margin:0 0 10px"><?= $view === 'delivered' ? 'Parcels Shiprocket shows as delivered whose COD payout is not in the reports yet, oldest delivery first. "Initiated" means Shiprocket has made the remittance but not paid it.' : 'Parcels not delivered yet, so no COD can come for them.' ?> Total <b><?= e(inr(array_sum(array_column($plist, 'amount')))) ?></b> for <?= count($plist) ?> order<?= count($plist) === 1 ? '' : 's' ?>.</div>
+  <?php if (!$plist): ?><div class="empty">Nothing here.</div><?php else: ?>
+  <div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Order</th><th>Customer</th><th>Shiprocket order ID</th><th>AWB</th><th><?= $view === 'delivered' ? 'Delivered' : 'Status' ?></th><th style="text-align:right">COD</th></tr></thead><tbody>
+    <?php foreach ($plist as $r): ?><tr>
+      <td><a href="order_view.php?id=<?= (int)$r['id'] ?>"><?= e(order_no($r['id'])) ?></a><div class="mini"><?= e(date('d M', strtotime($r['order_date']))) ?></div></td>
+      <td><?= e($r['name']) ?></td><td><?= e($r['sr_order_id'] !== '' ? $r['sr_order_id'] : '-') ?></td><td><?= e($r['awb'] !== '' ? $r['awb'] : '-') ?></td>
+      <td><?php if ($view === 'delivered'): ?><?= $r['delivered_on'] ? e(date('d M', strtotime($r['delivered_on']))) . '<div class="mini" style="' . ($r['days'] >= 10 ? 'color:#B42318;font-weight:600' : '') . '">' . (int)$r['days'] . ' day' . ($r['days'] === 1 ? '' : 's') . ' ago</div>' : '-' ?><?= $r['crf'] !== '' ? '<div class="mini">Initiated (CRF ' . e($r['crf']) . ')</div>' : '' ?><?php else: ?><?= e($r['sr_status'] !== '' ? $r['sr_status'] : 'no Shiprocket info') ?><?php endif; ?></td>
+      <td style="text-align:right"><b><?= e(inr($r['amount'])) ?></b></td></tr><?php endforeach; ?>
+  </tbody></table></div>
+  <?php endif; ?>
+</section>
+<?php else: ?>
 <section class="card">
   <h2>COD received<?= $srOk ? ' by Shiprocket' : '' ?>, date by date</h2>
   <form method="get" class="filters">
@@ -143,9 +179,12 @@ require __DIR__ . '/includes/header.php';
     <?php else: ?>
     <div class="cd">
       <?php foreach ($sr['days'] as $d): ?>
-      <details class="r" style="display:block"><summary style="display:flex;justify-content:space-between;gap:12px;cursor:pointer;list-style:none"><span><?= e(date('D, d M Y', strtotime($d['d']))) ?><small><?= (int)$d['n'] ?> order<?= (int)$d['n'] === 1 ? '' : 's' ?></small></span><b class="pos"><?= e(inr($d['amount'])) ?></b></summary>
+      <details class="r" style="display:block"<?= $from === $to ? ' open' : '' ?>><summary style="display:flex;justify-content:space-between;gap:12px;cursor:pointer;list-style:none"><span><?= e(date('D, d M Y', strtotime($d['d']))) ?><small><?= (int)$d['n'] ?> order<?= (int)$d['n'] === 1 ? '' : 's' ?></small></span><b class="pos"><?= e(inr($d['amount'])) ?></b></summary>
         <div style="margin-top:6px">
-          <?php foreach ($d['groups'] as $g): ?><div class="mini" style="display:flex;justify-content:space-between;gap:10px;font-weight:600"><span>UTR <?= e($g['utr'] !== '' ? $g['utr'] : '-') ?><?= $g['crf'] !== '' ? ' · CRF ' . e($g['crf']) : '' ?> · <?= (int)$g['n'] ?> order<?= $g['n'] === 1 ? '' : 's' ?></span><span><?= e(inr($g['amount'])) ?></span></div><?php endforeach; ?>
+          <?php foreach ($d['lines'] as $l): ?><div class="mini" style="display:flex;justify-content:space-between;gap:10px;font-weight:600;padding:3px 0;border-top:1px dashed var(--line)">
+            <span><?php if ($l['order_id']): ?><a href="order_view.php?id=<?= (int)$l['order_id'] ?>"><?= e(order_no($l['order_id'])) ?></a><?php else: ?><span title="Not an order of this panel">not in panel</span><?php endif; ?>
+              <?= $l['name'] !== '' ? ' · ' . e($l['name']) : '' ?> · Shiprocket <?= e($l['ref'] !== '' ? $l['ref'] : ($l['awb'] !== '' ? $l['awb'] : '-')) ?> · UTR <?= e($l['utr'] !== '' ? $l['utr'] : '-') ?></span>
+            <span><?= e(inr($l['amount'])) ?></span></div><?php endforeach; ?>
         </div>
       </details>
       <?php endforeach; ?>
@@ -165,6 +204,7 @@ require __DIR__ . '/includes/header.php';
   </div>
   <?php endif; ?>
 </section>
+<?php endif; ?>
 
 <details class="card" style="margin-top:16px" id="add">
   <summary style="cursor:pointer;font-size:17px;font-weight:800">Add COD received</summary>

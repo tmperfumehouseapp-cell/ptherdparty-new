@@ -24,9 +24,10 @@ function cod_sr_exprs(): array
 function cod_sr_received(PDO $pdo, string $from, string $to): array
 {
     $lines = $pdo->prepare(
-        "SELECT remit_date AS d, COALESCE(utr, '') AS utr, COALESCE(crf, '') AS crf, amount, order_id FROM sr_remit WHERE remit_date BETWEEN ? AND ?
+        "SELECT r.remit_date AS d, COALESCE(r.utr, '') AS utr, COALESCE(r.crf, '') AS crf, r.amount AS amount, r.order_id AS order_id, r.ref AS ref, COALESCE(r.awb, '') AS awb, COALESCE(o.customer_name, '') AS name
+         FROM sr_remit r LEFT JOIN orders o ON o.id = r.order_id WHERE r.remit_date BETWEEN ? AND ?
          UNION ALL
-         SELECT s.remit_date, COALESCE(s.utr, ''), COALESCE(s.crf, ''), COALESCE(NULLIF(s.remit_amount, 0), o.total - o.advance_amount), s.order_id
+         SELECT s.remit_date, COALESCE(s.utr, ''), COALESCE(s.crf, ''), COALESCE(NULLIF(s.remit_amount, 0), o.total - o.advance_amount), s.order_id, '', COALESCE(s.awb, ''), COALESCE(o.customer_name, '')
          FROM sr_status s JOIN orders o ON o.id = s.order_id
          WHERE o.payment_mode = 'cod' AND s.remit_date BETWEEN ? AND ? AND NOT EXISTS (SELECT 1 FROM sr_remit r WHERE r.order_id = s.order_id)"
     );
@@ -37,11 +38,13 @@ function cod_sr_received(PDO $pdo, string $from, string $to): array
     $panel = 0;
     foreach ($lines->fetchAll() as $r) {
         $d = (string)$r['d'];
-        $days[$d] = $days[$d] ?? ['d' => $d, 'n' => 0, 'amount' => 0.0, 'g' => []];
+        $days[$d] = $days[$d] ?? ['d' => $d, 'n' => 0, 'amount' => 0.0, 'g' => [], 'lines' => []];
         $k = $r['utr'] . '|' . $r['crf'];
         $days[$d]['g'][$k] = $days[$d]['g'][$k] ?? ['utr' => $r['utr'], 'crf' => $r['crf'], 'n' => 0, 'amount' => 0.0];
         $days[$d]['g'][$k]['n']++;
         $days[$d]['g'][$k]['amount'] += (float)$r['amount'];
+        $days[$d]['lines'][] = ['order_id' => $r['order_id'] !== null ? (int)$r['order_id'] : null, 'name' => (string)$r['name'], 'ref' => (string)$r['ref'], 'awb' => (string)$r['awb'],
+                                'utr' => (string)$r['utr'], 'crf' => (string)$r['crf'], 'amount' => (float)$r['amount']];
         $days[$d]['n']++;
         $days[$d]['amount'] += (float)$r['amount'];
         $total += (float)$r['amount'];
@@ -52,6 +55,7 @@ function cod_sr_received(PDO $pdo, string $from, string $to): array
     foreach ($days as &$day) {
         $day['groups'] = array_values($day['g']);
         usort($day['groups'], static fn($a, $b) => $b['amount'] <=> $a['amount']);
+        usort($day['lines'], static fn($a, $b) => $b['amount'] <=> $a['amount']);
         unset($day['g']);
     }
     unset($day);
@@ -95,4 +99,31 @@ function cod_sr_coverage(PDO $pdo): array
     $any = (int)$pdo->query("SELECT COUNT(*) FROM sr_remit")->fetchColumn() + (int)$pdo->query("SELECT COUNT(*) FROM sr_status WHERE COALESCE(utr, '') <> '' OR remit_date IS NOT NULL")->fetchColumn();
     $last = $pdo->query('SELECT MAX(remit_date) FROM sr_remit')->fetchColumn();
     return ['delivered' => (int)$r['delivered'], 'remitted' => (int)$r['remitted'], 'any' => $any, 'last' => $last ?: null];
+}
+
+/**
+ * The orders behind a pending figure, oldest delivery first.
+ * $kind: 'delivered' (delivered, Shiprocket has not paid: includes the initiated ones) or 'way' (still on the way).
+ * Each row: id, order_date, name, amount, delivered_on, days (since delivery), crf, sr_status, sr_order_id, awb.
+ */
+function cod_sr_pending_lines(PDO $pdo, string $kind, bool $hasSr, int $limit = 400): array
+{
+    $e = cod_sr_exprs();
+    $cond = $kind === 'way' ? "NOT {$e['delivered']} AND o.status IN ('created','dispatched')" : $e['delivered'];
+    $srId = $hasSr ? "COALESCE(o.shiprocket_order_id, '')" : "''";
+    $rows = $pdo->query(
+        "SELECT o.id, o.order_date, o.customer_name AS name, {$e['amt']} AS amount, o.delivered_at, COALESCE(o.tracking_id, '') AS awb, $srId AS sr_order_id,
+                {$e['x']['crf']} AS crf, {$e['x']['stat']} AS sr_status
+         FROM orders o WHERE o.payment_mode = 'cod' AND NOT {$e['remitted']} AND NOT {$e['dead']} AND $cond
+         ORDER BY o.delivered_at IS NULL, o.delivered_at, o.id LIMIT " . (int)$limit
+    )->fetchAll();
+    $today = strtotime(date('Y-m-d'));
+    foreach ($rows as &$r) {
+        $dd = substr((string)$r['delivered_at'], 0, 10);
+        $r['delivered_on'] = $dd !== '' && strtotime($dd) ? $dd : null;
+        $r['days'] = $r['delivered_on'] ? max(0, (int)floor(($today - strtotime($r['delivered_on'])) / 86400)) : null;
+        $r['amount'] = (float)$r['amount'];
+    }
+    unset($r);
+    return $rows;
 }
