@@ -16,6 +16,7 @@ function cod_detect_columns(array $rows): array
 {
     $norm = static function ($h): string {
         $h = strtolower(trim(str_replace("\xEF\xBB\xBF", '', (string)$h)));
+        $h = preg_replace('/\([^)]*\)|[₹$]/u', ' ', $h); // "Order Total (₹)" is the same column as "Order Total"
         return trim(preg_replace('/[\s_]+/', ' ', $h));
     };
     $byName = [];
@@ -39,7 +40,7 @@ function cod_detect_columns(array $rows): array
         }
         return null;
     };
-    $amount = $pick(['remitted amount', 'remitted amt', 'amount remitted', 'order value', 'cod amount', 'amount received', 'amount collected', 'collected amount', 'amount']);
+    $amount = $pick(['remitted amount', 'remitted amt', 'amount remitted', 'order value', 'cod amount', 'order total', 'order total amount', 'total amount', 'order amount', 'amount received', 'amount collected', 'collected amount', 'amount']);
     $date = $pick(['remittance date', 'cod remittance date', 'remitted date', 'remitted on', 'received date', 'date received', 'payment date', 'date']);
     $delivered = $pick(['delivered date', 'order delivered date', 'delivered on']);
     $crf = $pick(['crf id', 'crf', 'crf no', 'crf no.']);
@@ -95,12 +96,19 @@ function cod_group_results(array $results): array
  * Returns ['colInfo', 'results' (one entry per row), 'groups' (per CRF / UTR), 'ok', 'sum', 'notRemitted', 'delivered'].
  * Needs add_cod_receipt / mark_delivered_on / sheet_date / orders_has_sr_id (ops_lib, orders_lib).
  */
-function cod_process_rows(PDO $pdo, array $user, int $accId, array $rows): array
+function cod_process_rows(PDO $pdo, array $user, int $accId, array $rows, ?string $fallbackDate = null): array
 {
     require_once __DIR__ . '/order_tags_lib.php';
     srs_ensure($pdo); // (outside any transaction)
     $cols = cod_detect_columns($rows);
     $colInfo = $cols['names'];
+    if ($cols['header'] && $cols['amount'] === null) { // never treat a file we cannot read as "nothing remitted"
+        throw new RuntimeException('I could not find the amount column in this file (columns I found: ' . $colInfo . '). The file needs a column such as "Order Value", "Order Total" or "Remitted Amount".');
+    }
+    $fallbackDate = $fallbackDate !== null && $fallbackDate !== '' ? (valid_date($fallbackDate) ?? null) : null;
+    if ($cols['header'] && $cols['date'] === null && $fallbackDate === null) {
+        throw new RuntimeException('This file has no remittance date column (Shiprocket\'s "AWB Reconciliation" export has none). Pick the date Shiprocket paid this remittance in the "Remittance date" box and upload again. Nothing was saved.');
+    }
     $hasSr = orders_has_sr_id($pdo);
     $cell = static fn(array $r, ?int $c): string => $c === null ? '' : trim((string)($r[$c] ?? ''));
     $results = [];
@@ -132,21 +140,38 @@ function cod_process_rows(PDO $pdo, array $user, int $accId, array $rows): array
             }
         }
         $ref = $srid !== '' ? $srid : $awb;
-        $amt = $cols['amount'] !== null ? num($cell($r, $cols['amount'])) : 0.0;
+        $amt = $cols['amount'] !== null ? (float)preg_replace('/[^0-9.\-]/', '', $cell($r, $cols['amount'])) : 0.0; // "₹ 3,000.00" and "Rs. 3000" both read as 3000
         if ($ref === '' && $amt == 0) {
             continue;
         }
         $remitText = $cell($r, $cols['date']);
+        if ($remitText === '' && $fallbackDate !== null) {
+            $remitText = $fallbackDate; // the file has no date: the date typed on the upload page
+        }
         if ($amt <= 0 && $remitText === '' && $cols['header']) { // the all-orders report: parcels with no COD money remitted yet
             $notRemitted++;
             continue;
         }
-        $date = sheet_date($remitText) ?? biz_today();
+        $date = sheet_date($remitText) ?? $fallbackDate ?? biz_today();
         $line = ['row' => $i + 1, 'ref' => $ref, 'srid' => $srid, 'awb' => $awb, 'amount' => $amt, 'date' => $date, 'delivered' => sheet_date($cell($r, $cols['delivered'])),
                  'crf' => dl_norm($cell($r, $cols['crf'])), 'utr' => $cell($r, $cols['utr']), 'ok' => false, 'msg' => '', 'kind' => '',
                  'name' => $cell($r, $cols['name']), 'created' => $cols['created'] !== null ? sheet_date($cell($r, $cols['created'])) : null, 'order_id' => null, 'suggest' => []];
 
         $found = $ref !== '' ? dl_find_order($pdo, $cands, $hasSr, !$cols['header']) : null;
+        $line['note'] = '';
+        if ($found && $amt > 0) { // Shiprocket's "Order Total / Order Value" includes what the customer already paid in advance: only the COD part is money to receive
+            $q = $pdo->prepare('SELECT total, advance_amount FROM orders WHERE id = ?');
+            $q->execute([(int)$found[0]['id']]);
+            $ov = $q->fetch();
+            if ($ov) {
+                $pend = round((float)$ov['total'] - (float)$ov['advance_amount'] - order_cod_received($pdo, (int)$found[0]['id']), 2);
+                if ($pend > 0 && $amt > $pend + 0.005 && abs($amt - (float)$ov['total']) <= 1.0 && (float)$ov['advance_amount'] > 0) {
+                    $line['note'] = ' (the report shows the order total ' . inr($amt) . '; the customer had paid ' . inr((float)$ov['advance_amount']) . ' in advance, so the COD part ' . inr($pend) . ' was saved)';
+                    $amt = $pend;
+                    $line['amount'] = $pend;
+                }
+            }
+        }
         if ($amt > 0 && ($remitText !== '' || $line['utr'] !== '')) { // keep every payout line, matched or not
             srr_save($pdo, $ref, ['utr' => $line['utr'], 'crf' => $line['crf'], 'remit_date' => $remitText, 'amount' => $amt, 'awb' => $awb, 'order_id' => $found ? (int)$found[0]['id'] : null]);
         }
@@ -170,7 +195,7 @@ function cod_process_rows(PDO $pdo, array $user, int $accId, array $rows): array
                 add_cod_receipt($pdo, $user, $orderId, $amt, $accId, $date, 'excel');
                 $line['ok'] = true;
                 $line['kind'] = 'ok';
-                $line['msg'] = 'Saved for order ' . order_no($orderId) . ' (matched by ' . $by . ')';
+                $line['msg'] = 'Saved for order ' . order_no($orderId) . ' (matched by ' . $by . ')' . $line['note'];
                 $okCount++;
                 $okSum += $amt;
                 // COD money only arrives after delivery: a parcel still "created / dispatched" is marked delivered
