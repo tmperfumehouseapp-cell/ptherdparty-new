@@ -65,6 +65,7 @@ $tagsOk = false;
 if ($isAdmin) {
     try {
         srs_ensure($pdo);
+        srs_delivered_paid($pdo); // delivered parcels count as COD received (setting on the COD Amount page)
         $tagsOk = true;
     } catch (Throwable $e) {
         $tagsOk = false;

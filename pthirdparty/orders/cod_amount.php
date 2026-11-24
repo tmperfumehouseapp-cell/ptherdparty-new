@@ -18,6 +18,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 (string)($_POST['entry_date'] ?? ''), trim((string)($_POST['note'] ?? '')), []
             );
             flash('ok', 'COD received saved.');
+        } elseif ($action === 'mode') {
+            require_once __DIR__ . '/includes/sr_connect_lib.php';
+            sr_conn_ensure($pdo);
+            sr_conn_set($pdo, 'cod_delivered_paid', !empty($_POST['on']) ? '1' : '0');
+            flash('ok', !empty($_POST['on']) ? 'Delivered parcels are now counted as COD received.' : 'Delivered parcels are no longer counted as received automatically.');
         } elseif ($action === 'delete') {
             delete_remittance($pdo, (int)($_POST['id'] ?? 0));
             flash('ok', 'Entry deleted.');
@@ -51,13 +56,15 @@ foreach ($days as $d) {
 }
 // Shiprocket's own COD figures (UTR / remittance date), saved from its reports; the panel's hand-entered figures stay below for comparison
 $srOk = false;
-$sr = ['days' => [], 'total' => 0.0, 'orders' => 0, 'undated' => ['n' => 0, 'amount' => 0.0]];
+$assume = false;
+$sr = ['days' => [], 'total' => 0.0, 'orders' => 0, 'assumed' => ['n' => 0, 'amount' => 0.0], 'undated' => ['n' => 0, 'amount' => 0.0]];
 $sp = null;
 $cov = ['delivered' => 0, 'remitted' => 0, 'any' => 0];
 try {
     srs_ensure($pdo);
-    $sr = cod_sr_received($pdo, $from, $to);
-    $sp = cod_sr_pending($pdo);
+    $assume = srs_delivered_paid($pdo);
+    $sr = cod_sr_received($pdo, $from, $to, $assume);
+    $sp = cod_sr_pending($pdo, $assume);
     $cov = cod_sr_coverage($pdo);
     $srOk = true;
 } catch (Throwable $ex) {
@@ -112,12 +119,14 @@ require __DIR__ . '/includes/header.php';
   <?php if ($srOk): ?>
   <div class="stat"><div class="k">COD received <span class="mini">(Shiprocket paid)</span></div><div class="v pos"><?= e(inr($sr['total'])) ?></div>
     <div class="mini"><?= (int)$sr['orders'] ?> parcel<?= $sr['orders'] === 1 ? '' : 's' ?><?= $sr['orders'] > $sr['panel'] ? ' (' . (int)$sr['panel'] . ' are panel orders)' : '' ?> · <?= e($from === $to ? date('d M Y', strtotime($from)) : date('d M', strtotime($from)) . ' to ' . date('d M Y', strtotime($to))) ?></div>
+    <?php if ($assume && $sr['assumed']['n'] > 0): ?><div class="mini"><?= (int)$sr['assumed']['n'] ?> delivered parcel<?= $sr['assumed']['n'] === 1 ? '' : 's' ?> (<?= e(inr($sr['assumed']['amount'])) ?>) counted as received, dated by delivery day</div><?php endif; ?>
     <div class="mini">Entered in the panel in these dates: <b><?= e(inr($received)) ?></b><?= abs($sr['total'] - $received) > 0.5 ? ' · difference ' . e(inr(abs($sr['total'] - $received))) . ($sr['total'] > $received ? ' (not entered yet)' : '') : ' · matches' ?></div></div>
-  <div class="stat"><div class="k">COD pending <span class="mini">(Shiprocket still to pay)</span></div><div class="v" style="<?= $sp['total']['amount'] > 0.004 ? 'color:#B45309' : '' ?>"><?= e(inr($sp['total']['amount'])) ?></div>
+  <div class="stat"><div class="k">COD pending <span class="mini">(<?= $assume ? 'still on the way' : 'Shiprocket still to pay' ?>)</span></div><div class="v" style="<?= $sp['total']['amount'] > 0.004 ? 'color:#B45309' : '' ?>"><?= e(inr($sp['total']['amount'])) ?></div>
     <div class="mini"><?= (int)$sp['total']['n'] ?> order<?= $sp['total']['n'] === 1 ? '' : 's' ?> waiting</div>
-    <div class="mini"><a class="rowlink" href="orders.php?tag=cod_pending">Delivered, nothing yet</a>: <b><?= e(inr($sp['delivered_waiting']['amount'])) ?></b> (<?= (int)$sp['delivered_waiting']['n'] ?>)
+    <?php if ($assume): ?><div class="mini">Delivered parcels are counted as received (their money is already in your QR). <a class="rowlink" href="orders.php?tag=transit">On the way</a>: <b><?= e(inr($sp['on_the_way']['amount'])) ?></b> (<?= (int)$sp['on_the_way']['n'] ?>)</div>
+    <?php else: ?><div class="mini"><a class="rowlink" href="orders.php?tag=cod_pending">Delivered, nothing yet</a>: <b><?= e(inr($sp['delivered_waiting']['amount'])) ?></b> (<?= (int)$sp['delivered_waiting']['n'] ?>)
       · <a class="rowlink" href="orders.php?tag=cod_initiated">Initiated</a>: <b><?= e(inr($sp['delivered_initiated']['amount'])) ?></b> (<?= (int)$sp['delivered_initiated']['n'] ?>)
-      · <a class="rowlink" href="orders.php?tag=transit">On the way</a>: <b><?= e(inr($sp['on_the_way']['amount'])) ?></b> (<?= (int)$sp['on_the_way']['n'] ?>)</div></div>
+      · <a class="rowlink" href="orders.php?tag=transit">On the way</a>: <b><?= e(inr($sp['on_the_way']['amount'])) ?></b> (<?= (int)$sp['on_the_way']['n'] ?>)</div><?php endif; ?></div>
   <?php else: ?>
   <div class="stat"><div class="k">Pending COD amount</div><div class="v" style="<?= $pending['due'] > 0.004 ? 'color:#B45309' : '' ?>"><?= e(inr($pending['due'])) ?></div>
     <div class="mini"><?= ($pending['due'] > 0.004 && $pending['orders']) ? (int)$pending['orders'] . ' order' . ($pending['orders'] === 1 ? '' : 's') . ' waiting · ' : '' ?><a class="rowlink" href="orders.php?mode=cod_due">see which</a></div></div>
@@ -133,14 +142,14 @@ require __DIR__ . '/includes/header.php';
 ?>
 <div style="display:flex;flex-wrap:wrap;gap:8px;margin:0 0 14px">
   <a class="btn btn-sm linkbtn <?= $view === 'received' ? 'btn-accent' : 'btn-ghost' ?>" href="<?= e($vq('received')) ?>">COD received in my account · <?= e(inr($sr['total'])) ?></a>
-  <a class="btn btn-sm linkbtn <?= $view === 'delivered' ? 'btn-accent' : 'btn-ghost' ?>" href="<?= e($vq('delivered')) ?>">Delivered, COD not received yet · <?= (int)$notRecv ?> · <?= e(inr($notRecvAmt)) ?></a>
+  <a class="btn btn-sm linkbtn <?= $view === 'delivered' ? 'btn-accent' : 'btn-ghost' ?>" href="<?= e($vq('delivered')) ?>"><?= $assume ? 'Delivered, no Shiprocket payout line' : 'Delivered, COD not received yet' ?> · <?= (int)$notRecv ?> · <?= e(inr($notRecvAmt)) ?></a>
   <a class="btn btn-sm linkbtn <?= $view === 'way' ? 'btn-accent' : 'btn-ghost' ?>" href="<?= e($vq('way')) ?>">Still on the way · <?= (int)$sp['on_the_way']['n'] ?> · <?= e(inr($sp['on_the_way']['amount'])) ?></a>
 </div>
 <?php endif; ?>
 
 <?php if ($srOk && $view !== 'received'): ?>
 <section class="card">
-  <h2><?= $view === 'delivered' ? 'Delivered, COD not received yet' : 'Still on the way (COD comes after delivery)' ?></h2>
+  <h2><?= $view === 'delivered' ? ($assume ? 'Delivered, but no payout line from Shiprocket (counted as received)' : 'Delivered, COD not received yet') : 'Still on the way (COD comes after delivery)' ?></h2>
   <div class="hint" style="margin:0 0 10px"><?= $view === 'delivered' ? 'Parcels Shiprocket shows as delivered whose COD payout is not in the reports yet, oldest delivery first. "Initiated" means Shiprocket has made the remittance but not paid it.' : 'Parcels not delivered yet, so no COD can come for them.' ?> Total <b><?= e(inr(array_sum(array_column($plist, 'amount')))) ?></b> for <?= count($plist) ?> order<?= count($plist) === 1 ? '' : 's' ?>.</div>
   <?php if (!$plist): ?><div class="empty">Nothing here.</div><?php else: ?>
   <div style="overflow-x:auto"><table class="tbl"><thead><tr><th>Order</th><th>Customer</th><th>Shiprocket order ID</th><th>AWB</th><th><?= $view === 'delivered' ? 'Delivered' : 'Status' ?></th><th style="text-align:right">COD</th></tr></thead><tbody>
@@ -183,7 +192,7 @@ require __DIR__ . '/includes/header.php';
         <div style="margin-top:6px">
           <?php foreach ($d['lines'] as $l): ?><div class="mini" style="display:flex;justify-content:space-between;gap:10px;font-weight:600;padding:3px 0;border-top:1px dashed var(--line)">
             <span><?php if ($l['order_id']): ?><a href="order_view.php?id=<?= (int)$l['order_id'] ?>"><?= e(order_no($l['order_id'])) ?></a><?php else: ?><span title="Not an order of this panel">not in panel</span><?php endif; ?>
-              <?= $l['name'] !== '' ? ' · ' . e($l['name']) : '' ?> · Shiprocket <?= e($l['ref'] !== '' ? $l['ref'] : ($l['awb'] !== '' ? $l['awb'] : '-')) ?> · UTR <?= e($l['utr'] !== '' ? $l['utr'] : '-') ?></span>
+              <?= $l['name'] !== '' ? ' · ' . e($l['name']) : '' ?> · Shiprocket <?= e($l['ref'] !== '' ? $l['ref'] : ($l['awb'] !== '' ? $l['awb'] : '-')) ?> <?= !empty($l['assumed']) ? ' · delivered, counted as received' : ' · UTR ' . e($l['utr'] !== '' ? $l['utr'] : '-') ?></span>
             <span><?= e(inr($l['amount'])) ?></span></div><?php endforeach; ?>
         </div>
       </details>
@@ -191,6 +200,9 @@ require __DIR__ . '/includes/header.php';
       <div class="r tot"><span>Total</span><b><?= e(inr($sr['total'])) ?></b></div>
     </div>
     <?php endif; ?>
+    <form method="post" style="margin:14px 0 0;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><?= csrf_field() ?><input type="hidden" name="action" value="mode"><input type="hidden" name="on" value="<?= $assume ? '0' : '1' ?>">
+      <span class="mini">Setting: delivered parcels are <b><?= $assume ? 'counted as COD received (money already in my QR)' : 'not counted until Shiprocket pays' ?></b></span>
+      <button class="btn btn-ghost btn-sm" type="submit"><?= $assume ? 'Turn off' : 'Turn on' ?></button></form>
     <h3 style="margin:22px 0 4px;font-size:15px">What you entered in the panel (for comparison)</h3>
   <?php endif; ?>
   <?php if (!$days): ?>
