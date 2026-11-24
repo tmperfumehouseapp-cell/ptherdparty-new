@@ -10,7 +10,7 @@ function cod_sr_exprs(): array
     return [
         'x'         => $x,
         'amt'       => '(o.total - o.advance_amount)',
-        'remitted'  => "({$x['utr']} <> '' OR EXISTS (SELECT 1 FROM sr_status rs WHERE rs.order_id = o.id AND rs.remit_date IS NOT NULL))",
+        'remitted'  => "({$x['utr']} <> '' OR EXISTS (SELECT 1 FROM sr_status rs WHERE rs.order_id = o.id AND rs.remit_date IS NOT NULL) OR EXISTS (SELECT 1 FROM sr_remit rr WHERE rr.order_id = o.id))",
         'delivered' => "(o.status = 'delivered' OR {$x['stat']} = 'delivered')",
         'dead'      => "(o.status = 'refunded' OR {$x['cancel']})",
     ];
@@ -18,35 +18,45 @@ function cod_sr_exprs(): array
 
 /**
  * What Shiprocket paid between $from and $to: ['days' => [[d, n, amount, groups => [[utr, crf, n, amount]]]], 'total', 'orders',
- *   'undated' => [n, amount]  (paid, but the report had no remittance date)].
+ *   'undated' => [n, amount] (paid, but the report had no remittance date), 'panel' => how many of the paid parcels are panel orders].
+ * Source: every payout line of the uploaded reports (sr_remit), plus panel orders whose payout was saved the older way (sr_status) and are not in sr_remit.
  */
 function cod_sr_received(PDO $pdo, string $from, string $to): array
 {
-    $amt = 'COALESCE(NULLIF(s.remit_amount, 0), o.total - o.advance_amount)';
-    $st = $pdo->prepare(
-        "SELECT s.remit_date AS d, COALESCE(s.utr, '') AS utr, COALESCE(s.crf, '') AS crf, COUNT(*) AS n, COALESCE(SUM($amt), 0) AS amount
+    $lines = $pdo->prepare(
+        "SELECT remit_date AS d, COALESCE(utr, '') AS utr, COALESCE(crf, '') AS crf, amount, order_id FROM sr_remit WHERE remit_date BETWEEN ? AND ?
+         UNION ALL
+         SELECT s.remit_date, COALESCE(s.utr, ''), COALESCE(s.crf, ''), COALESCE(NULLIF(s.remit_amount, 0), o.total - o.advance_amount), s.order_id
          FROM sr_status s JOIN orders o ON o.id = s.order_id
-         WHERE o.payment_mode = 'cod' AND s.remit_date BETWEEN ? AND ?
-         GROUP BY s.remit_date, s.utr, s.crf ORDER BY s.remit_date DESC, amount DESC"
+         WHERE o.payment_mode = 'cod' AND s.remit_date BETWEEN ? AND ? AND NOT EXISTS (SELECT 1 FROM sr_remit r WHERE r.order_id = s.order_id)"
     );
-    $st->execute([$from, $to]);
+    $lines->execute([$from, $to, $from, $to]);
     $days = [];
     $total = 0.0;
     $orders = 0;
-    foreach ($st->fetchAll() as $r) {
+    $panel = 0;
+    foreach ($lines->fetchAll() as $r) {
         $d = (string)$r['d'];
-        $days[$d] = $days[$d] ?? ['d' => $d, 'n' => 0, 'amount' => 0.0, 'groups' => []];
-        $days[$d]['n'] += (int)$r['n'];
+        $days[$d] = $days[$d] ?? ['d' => $d, 'n' => 0, 'amount' => 0.0, 'g' => []];
+        $k = $r['utr'] . '|' . $r['crf'];
+        $days[$d]['g'][$k] = $days[$d]['g'][$k] ?? ['utr' => $r['utr'], 'crf' => $r['crf'], 'n' => 0, 'amount' => 0.0];
+        $days[$d]['g'][$k]['n']++;
+        $days[$d]['g'][$k]['amount'] += (float)$r['amount'];
+        $days[$d]['n']++;
         $days[$d]['amount'] += (float)$r['amount'];
-        $days[$d]['groups'][] = ['utr' => $r['utr'], 'crf' => $r['crf'], 'n' => (int)$r['n'], 'amount' => (float)$r['amount']];
         $total += (float)$r['amount'];
-        $orders += (int)$r['n'];
+        $orders++;
+        $panel += $r['order_id'] !== null ? 1 : 0;
     }
-    $u = $pdo->query(
-        "SELECT COUNT(*) AS n, COALESCE(SUM($amt), 0) AS amount FROM sr_status s JOIN orders o ON o.id = s.order_id
-         WHERE o.payment_mode = 'cod' AND s.remit_date IS NULL AND COALESCE(s.utr, '') <> ''"
-    )->fetch();
-    return ['days' => array_values($days), 'total' => round($total, 2), 'orders' => $orders, 'undated' => ['n' => (int)$u['n'], 'amount' => round((float)$u['amount'], 2)]];
+    krsort($days);
+    foreach ($days as &$day) {
+        $day['groups'] = array_values($day['g']);
+        usort($day['groups'], static fn($a, $b) => $b['amount'] <=> $a['amount']);
+        unset($day['g']);
+    }
+    unset($day);
+    $u = $pdo->query("SELECT COUNT(*) AS n, COALESCE(SUM(amount), 0) AS amount FROM sr_remit WHERE remit_date IS NULL")->fetch();
+    return ['days' => array_values($days), 'total' => round($total, 2), 'orders' => $orders, 'panel' => $panel, 'undated' => ['n' => (int)$u['n'], 'amount' => round((float)$u['amount'], 2)]];
 }
 
 /**
@@ -82,6 +92,7 @@ function cod_sr_coverage(PDO $pdo): array
         "SELECT COUNT(*) AS delivered, COALESCE(SUM(CASE WHEN {$e['remitted']} THEN 1 ELSE 0 END), 0) AS remitted
          FROM orders o WHERE o.payment_mode = 'cod' AND {$e['delivered']} AND NOT {$e['dead']}"
     )->fetch();
-    $any = (int)$pdo->query("SELECT COUNT(*) FROM sr_status WHERE COALESCE(utr, '') <> '' OR remit_date IS NOT NULL")->fetchColumn();
-    return ['delivered' => (int)$r['delivered'], 'remitted' => (int)$r['remitted'], 'any' => $any];
+    $any = (int)$pdo->query("SELECT COUNT(*) FROM sr_remit")->fetchColumn() + (int)$pdo->query("SELECT COUNT(*) FROM sr_status WHERE COALESCE(utr, '') <> '' OR remit_date IS NOT NULL")->fetchColumn();
+    $last = $pdo->query('SELECT MAX(remit_date) FROM sr_remit')->fetchColumn();
+    return ['delivered' => (int)$r['delivered'], 'remitted' => (int)$r['remitted'], 'any' => $any, 'last' => $last ?: null];
 }

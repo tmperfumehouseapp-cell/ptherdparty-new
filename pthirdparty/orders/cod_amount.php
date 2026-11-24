@@ -102,7 +102,7 @@ require __DIR__ . '/includes/header.php';
 <div class="ct">
   <?php if ($srOk): ?>
   <div class="stat"><div class="k">COD received <span class="mini">(Shiprocket paid)</span></div><div class="v pos"><?= e(inr($sr['total'])) ?></div>
-    <div class="mini"><?= (int)$sr['orders'] ?> order<?= $sr['orders'] === 1 ? '' : 's' ?> · <?= e($from === $to ? date('d M Y', strtotime($from)) : date('d M', strtotime($from)) . ' to ' . date('d M Y', strtotime($to))) ?></div>
+    <div class="mini"><?= (int)$sr['orders'] ?> parcel<?= $sr['orders'] === 1 ? '' : 's' ?><?= $sr['orders'] > $sr['panel'] ? ' (' . (int)$sr['panel'] . ' are panel orders)' : '' ?> · <?= e($from === $to ? date('d M Y', strtotime($from)) : date('d M', strtotime($from)) . ' to ' . date('d M Y', strtotime($to))) ?></div>
     <div class="mini">Entered in the panel in these dates: <b><?= e(inr($received)) ?></b><?= abs($sr['total'] - $received) > 0.5 ? ' · difference ' . e(inr(abs($sr['total'] - $received))) . ($sr['total'] > $received ? ' (not entered yet)' : '') : ' · matches' ?></div></div>
   <div class="stat"><div class="k">COD pending <span class="mini">(Shiprocket still to pay)</span></div><div class="v" style="<?= $sp['total']['amount'] > 0.004 ? 'color:#B45309' : '' ?>"><?= e(inr($sp['total']['amount'])) ?></div>
     <div class="mini"><?= (int)$sp['total']['n'] ?> order<?= $sp['total']['n'] === 1 ? '' : 's' ?> waiting</div>
@@ -135,7 +135,7 @@ require __DIR__ . '/includes/header.php';
     <?php if ($cov['any'] === 0): ?>
       <div class="hint" style="margin:0 0 12px">The panel has no Shiprocket payout information yet. Upload Shiprocket's all-orders report (or the COD remittance report) on <a href="delivered_upload.php">Upload delivered CSV</a>: it has the UTR number, remittance date and remitted amount, and this page fills by itself.</div>
     <?php else: ?>
-      <div class="hint" style="margin:0 0 12px">Shiprocket payout information is on <b><?= (int)$cov['remitted'] ?></b> of <b><?= (int)$cov['delivered'] ?></b> delivered COD orders. If that is low, upload the latest Shiprocket report. Amounts are what Shiprocket remitted (after its COD charge); where the report has no amount, the order's COD amount is used.</div>
+      <div class="hint" style="margin:0 0 12px">Everything here comes from the Shiprocket reports you uploaded<?= $cov['last'] ? ' (latest payout date in them: <b>' . e(date('d M Y', strtotime($cov['last']))) . '</b>)' : '' ?>, so it is exactly what Shiprocket says it paid, after its COD charge. To bring it up to today, download the latest all-orders report from Shiprocket and upload it on <a href="delivered_upload.php">Upload delivered CSV</a>; uploading the same report again never counts anything twice. <b><?= (int)$cov['delivered'] - (int)$cov['remitted'] ?></b> of your <?= (int)$cov['delivered'] ?> delivered COD orders have no payout in them yet.</div>
     <?php endif; ?>
     <?php if ($sr['undated']['n'] > 0): ?><div class="hint" style="margin:0 0 12px"><?= (int)$sr['undated']['n'] ?> paid orders (<?= e(inr($sr['undated']['amount'])) ?>) have a UTR but no remittance date in the report, so they are not in a date below.</div><?php endif; ?>
     <?php if (!$sr['days']): ?>

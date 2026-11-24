@@ -439,6 +439,9 @@ function dl_process_rows(PDO $pdo, array $rows): array
             }
         }
         $found = dl_find_order($pdo, $cands, $hasSr, !$cols['header']);
+        // a COD payout line is kept even when the parcel is not a panel order, so the COD Amount page matches Shiprocket
+        srr_save($pdo, $srid !== '' ? $srid : $awb, ['utr' => $cell($r, $cols['utr']), 'crf' => $cell($r, $cols['crf']), 'remit_date' => $cell($r, $cols['remit_date']),
+            'amount' => $cell($r, $cols['remit_amt']), 'awb' => $awb, 'order_id' => $found ? (int)$found[0]['id'] : null]);
         if ($found) { // what Shiprocket says about this parcel is saved on the order (status, COD remittance) for the tags on the Orders page
             $used[(int)$found[0]['id']] = true;
             srs_save($pdo, (int)$found[0]['id'], [

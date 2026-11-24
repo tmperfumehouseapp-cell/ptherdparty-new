@@ -147,6 +147,9 @@ function cod_process_rows(PDO $pdo, array $user, int $accId, array $rows): array
                  'name' => $cell($r, $cols['name']), 'created' => $cols['created'] !== null ? sheet_date($cell($r, $cols['created'])) : null, 'order_id' => null, 'suggest' => []];
 
         $found = $ref !== '' ? dl_find_order($pdo, $cands, $hasSr, !$cols['header']) : null;
+        if ($amt > 0 && ($remitText !== '' || $line['utr'] !== '')) { // keep every payout line, matched or not
+            srr_save($pdo, $ref, ['utr' => $line['utr'], 'crf' => $line['crf'], 'remit_date' => $remitText, 'amount' => $amt, 'awb' => $awb, 'order_id' => $found ? (int)$found[0]['id'] : null]);
+        }
         if (!$found) {
             $deliveredOn = sheet_date($cell($r, $cols['delivered'])) ?? $date;
             if ($firstOrder !== '' && $deliveredOn < $firstOrder) { // from before the panel existed: not a failure, just not a panel order

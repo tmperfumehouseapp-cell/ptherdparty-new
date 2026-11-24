@@ -38,6 +38,21 @@ function srs_ensure(PDO $pdo): void
                 shipped_on DATE NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
         );
+        // every COD payout line of Shiprocket's reports, whether or not the parcel is a panel order (so "COD received" matches Shiprocket exactly)
+        $pdo->exec(
+            'CREATE TABLE IF NOT EXISTS sr_remit (
+                ref VARCHAR(80) NOT NULL PRIMARY KEY,
+                utr VARCHAR(80) NULL,
+                crf VARCHAR(40) NULL,
+                remit_date DATE NULL,
+                amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+                awb VARCHAR(60) NULL,
+                order_id INT UNSIGNED NULL,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                KEY idx_date (remit_date),
+                KEY idx_order (order_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4'
+        );
         foreach (['status_date', 'shipped_on'] as $col) { // tables made by the first version get the date columns
             if (!$pdo->query("SHOW COLUMNS FROM sr_status LIKE '$col'")->fetch()) {
                 $pdo->exec("ALTER TABLE sr_status ADD COLUMN $col DATE NULL");
@@ -108,6 +123,31 @@ function srs_save(PDO $pdo, int $orderId, array $d): void
         $clean['order_id'] = $orderId;
         $clean['updated_at'] = date('Y-m-d H:i:s');
         $pdo->prepare('INSERT INTO sr_status (' . implode(',', array_keys($clean)) . ') VALUES (' . implode(',', array_fill(0, count($clean), '?')) . ')')->execute(array_values($clean));
+    }
+}
+
+/**
+ * Saves one COD payout line from a Shiprocket report: $ref = Shiprocket Order ID (or the AWB when the report has none).
+ * Saving the same line again (the same report, or a newer one) updates it, so nothing is counted twice.
+ * $d: utr, crf, remit_date, amount, awb, order_id (panel order or null).
+ */
+function srr_save(PDO $pdo, string $ref, array $d): void
+{
+    $ref = mb_substr(trim($ref), 0, 80);
+    $utr = mb_substr(srs_clean($d['utr'] ?? ''), 0, 80);
+    $amt = (float)str_replace(',', '', srs_clean($d['amount'] ?? ''));
+    $rd = srs_clean($d['remit_date'] ?? '');
+    $date = $rd !== '' && strtotime($rd) ? date('Y-m-d', strtotime($rd)) : null;
+    if ($ref === '' || ($utr === '' && $date === null) || $amt <= 0) {
+        return; // not a payout line
+    }
+    $vals = [$utr, mb_substr(srs_clean($d['crf'] ?? ''), 0, 40), $date, round($amt, 2), mb_substr(srs_clean($d['awb'] ?? ''), 0, 60), isset($d['order_id']) ? (int)$d['order_id'] : null, date('Y-m-d H:i:s')];
+    $st = $pdo->prepare('SELECT ref FROM sr_remit WHERE ref = ?');
+    $st->execute([$ref]);
+    if ($st->fetchColumn() !== false) {
+        $pdo->prepare('UPDATE sr_remit SET utr = ?, crf = ?, remit_date = ?, amount = ?, awb = ?, order_id = COALESCE(?, order_id), updated_at = ? WHERE ref = ?')->execute(array_merge($vals, [$ref]));
+    } else {
+        $pdo->prepare('INSERT INTO sr_remit (utr, crf, remit_date, amount, awb, order_id, updated_at, ref) VALUES (?,?,?,?,?,?,?,?)')->execute(array_merge($vals, [$ref]));
     }
 }
 
