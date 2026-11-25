@@ -68,6 +68,19 @@ function order_resolve_account(PDO $pdo, array $user, array $lines, int $posted)
  * and what you owe the dealers is entered separately in Billing). Prefers the account named "My qr", otherwise the first own account.
  * Only a default for the forms: any other account can still be chosen. Returns 0 when there is no own account.
  */
+/**
+ * Your own QR ("My QR"). All COD money comes into it, and dealer payments and profit given to the other company go out of it.
+ * Throws when there is no such account, so money is never saved to a wrong account.
+ */
+function my_qr_id(PDO $pdo): int
+{
+    $id = default_cod_account_id($pdo);
+    if ($id <= 0) {
+        throw new RuntimeException('There is no account called "My QR". Add it on the Accounts page first.');
+    }
+    return $id;
+}
+
 function default_cod_account_id(PDO $pdo): int
 {
     $rows = $pdo->query('SELECT id, name FROM accounts WHERE is_active = 1 AND party_id IS NULL ORDER BY id')->fetchAll();

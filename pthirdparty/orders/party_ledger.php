@@ -7,6 +7,7 @@ require_once __DIR__ . '/includes/dealer_lib.php';
 require_once __DIR__ . '/includes/ledger_edit_lib.php';
 require_once __DIR__ . '/includes/profit_mode_lib.php';
 require_once __DIR__ . '/includes/qr_move_lib.php';
+require_once __DIR__ . '/includes/order_dealer_lib.php';
 $user = require_admin();
 $pdo = db();
 
@@ -24,7 +25,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = (string)($_POST['action'] ?? '');
     try {
         if ($action === 'payment') {
-            $acc = active_account_id($_POST['account_id'] ?? 0);
+            $acc = my_qr_id($pdo); // dealers are always paid from your own QR
             $amt = round(num($_POST['amount'] ?? 0), 2);
             $d = valid_date((string)($_POST['entry_date'] ?? '')) ?? biz_today();
             $note = trim((string)($_POST['note'] ?? ''));
@@ -263,8 +264,7 @@ require __DIR__ . '/includes/header.php';
     <h2>Record a payment</h2>
     <form method="post" autocomplete="off" enctype="multipart/form-data" id="payform" data-owed="<?= e(number_format(max(0.0, $balance), 2, '.', '')) ?>">
       <?= csrf_field() ?><input type="hidden" name="action" value="payment"><input type="hidden" name="id" value="<?= (int)$partyId ?>">
-      <div class="field"><label for="p_acc">Paid from account</label>
-        <select id="p_acc" name="account_id"><?php foreach ($accounts as $a): ?><option value="<?= (int)$a['id'] ?>"><?= e($a['name']) ?></option><?php endforeach; ?></select></div>
+      <div class="field"><label>Paid from account</label><div class="mini" style="padding:12px 0;font-weight:700">My QR</div></div>
       <div class="field"><label for="p_method">How paid</label>
         <select id="p_method" name="pay_method"><option value="online">Online</option><option value="cash">Cash</option></select></div>
       <div class="field"><label for="p_amount">Amount (₹)</label><input id="p_amount" name="amount" type="text" inputmode="decimal" required></div>
