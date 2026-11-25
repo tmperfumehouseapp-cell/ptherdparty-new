@@ -87,7 +87,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             mark_delivered($pdo, $id);
             flash('ok', 'Marked as delivered.');
         } elseif ($action === 'cod') {
-            $amt = add_cod_receipt($pdo, $user, $id, num($_POST['amount'] ?? 0), (int)($_POST['account_id'] ?? 0), (string)($_POST['received_date'] ?? ''), 'manual');
+            $amt = add_cod_receipt($pdo, $user, $id, num($_POST['amount'] ?? 0), my_qr_id($pdo), (string)($_POST['received_date'] ?? ''), 'manual');
             flash('ok', 'COD payment of ' . inr($amt) . ' recorded.');
         } elseif ($action === 'refund') {
             refund_order($pdo, $user, $id, num($_POST['amount'] ?? 0), (int)($_POST['account_id'] ?? 0),
@@ -539,7 +539,7 @@ require __DIR__ . '/includes/header.php';
         <?= csrf_field() ?><input type="hidden" name="id" value="<?= (int)$id ?>">
         <div class="twocol">
           <div><label for="cod_amount">Amount received (₹)</label><input id="cod_amount" name="amount" type="text" inputmode="decimal" value="<?= e((string)$codPending) ?>"></div>
-          <div><label for="cod_acc">Into account</label><select id="cod_acc" name="account_id"><?= $codOpts ?></select></div>
+          <div><label>Into account</label><div class="mini" style="padding:12px 0;font-weight:700">My QR</div></div>
           <div><label for="cod_date">Date</label><input id="cod_date" name="received_date" type="date" value="<?= e(biz_today()) ?>" <?= $dateInput ?>></div>
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:12px">

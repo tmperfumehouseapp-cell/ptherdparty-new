@@ -16,7 +16,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && (string)($_POST['action'] ?? '') ==
     csrf_verify();
     $ok = true;
     try {
-        $acc = active_account_id($_POST['account_id'] ?? 0);
+        $acc = my_qr_id($pdo);
         if (!$acc) {
             throw new RuntimeException('Choose the account the money came into.');
         }
@@ -38,7 +38,7 @@ $usedAcc = $codDefault;
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     csrf_verify();
     try {
-        $accId = active_account_id($_POST['account_id'] ?? 0);
+        $accId = my_qr_id($pdo);
         if (!$accId) {
             throw new RuntimeException('Choose the account the money came into.');
         }
@@ -137,10 +137,7 @@ require __DIR__ . '/includes/header.php';
     <h2>Upload COD money</h2>
     <form method="post" enctype="multipart/form-data" autocomplete="off">
       <?= csrf_field() ?>
-      <div class="field"><label for="account_id">Money came into</label>
-        <select id="account_id" name="account_id" required>
-          <?php foreach ($accounts as $a): ?><option value="<?= (int)$a['id'] ?>"<?= (int)$a['id'] === $usedAcc ? ' selected' : '' ?>><?= e($a['name']) ?></option><?php endforeach; ?>
-        </select></div>
+      <div class="field"><label>Money came into</label><div class="mini" style="padding:12px 0;font-weight:700">My QR</div></div>
       <div class="field"><label for="remit_date">Remittance date (only if the file has none)</label><input id="remit_date" name="remit_date" type="date" style="width:100%">
         <div class="hint">Shiprocket's "AWB Reconciliation" export has no payment date. Type the date Shiprocket paid that remittance (the date on its COD Remittance page, for example 12 Nov). A file that has its own Remittance Date column ignores this box.</div></div>
       <div class="field"><label for="sheet">Shiprocket COD report (.xls, .xlsx or .csv)</label><input id="sheet" name="sheet" type="file" accept=".xls,.xlsx,.csv" required style="width:100%"></div>

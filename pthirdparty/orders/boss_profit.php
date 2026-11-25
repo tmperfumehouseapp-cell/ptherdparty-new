@@ -15,7 +15,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             boss_profit_add($pdo, $user, (string)($_POST['company'] ?? ''), num($_POST['amount'] ?? 0), (string)($_POST['entry_date'] ?? ''), (string)($_POST['note'] ?? ''));
             flash('ok', 'Saved: profit given to ' . trim((string)$_POST['company']) . '.');
         } elseif ($action === 'edit') {
-            boss_profit_edit($pdo, (int)($_POST['id'] ?? 0), (string)($_POST['company'] ?? ''), num($_POST['amount'] ?? 0), (string)($_POST['entry_date'] ?? ''), (string)($_POST['note'] ?? ''));
+            boss_profit_edit($pdo, $user, (int)($_POST['id'] ?? 0), (string)($_POST['company'] ?? ''), num($_POST['amount'] ?? 0), (string)($_POST['entry_date'] ?? ''), (string)($_POST['note'] ?? ''));
             flash('ok', 'Entry changed.');
         } elseif ($action === 'delete') {
             boss_profit_delete($pdo, (int)($_POST['id'] ?? 0));
@@ -66,7 +66,7 @@ require __DIR__ . '/includes/header.php';
   <div class="stat"><div class="k">Profit earned</div><div class="v pos"><?= e(inr($sum['earned'])) ?></div>
     <div class="mini">on delivered orders, after the dealers' share</div></div>
   <div class="stat"><div class="k">Given to your other company</div><div class="v"><?= e(inr($given)) ?></div>
-    <div class="mini"><?= count($entries) ?> entr<?= count($entries) === 1 ? 'y' : 'ies' ?></div></div>
+    <div class="mini"><?= count($entries) ?> entr<?= count($entries) === 1 ? 'y' : 'ies' ?> · paid from My QR</div></div>
   <div class="stat"><div class="k">Profit left with you</div><div class="v" style="<?= $left < -0.004 ? 'color:#B42318' : ($left > 0.004 ? 'color:#B45309' : '') ?>"><?= e(inr($left)) ?></div>
     <div class="mini"><?= $left < -0.004 ? 'You gave more than the profit earned so far' : 'earned minus given' ?></div></div>
   <div class="stat"><div class="k">Profit still to come</div><div class="v"><?= e(inr($sum['coming'])) ?></div>
@@ -83,7 +83,7 @@ require __DIR__ . '/includes/header.php';
       <datalist id="bpcompanies"><?php foreach ($companies as $c): ?><option value="<?= e($c) ?>"><?php endforeach; ?></datalist></div>
     <div class="field"><label for="note">Note (optional)</label><input id="note" name="note" type="text" placeholder="for example: November profit, UPI ref ..."></div>
     <button class="btn btn-accent btn-block" type="submit">Save entry</button>
-    <div class="hint">This is a record only. It does not move money in any account, QR or dealer figure.</div>
+    <div class="hint">The money goes out of <b>My QR</b>: the entry also shows in the Ledger (Other / transfer) and lowers the My QR balance. Dealer figures are not touched. Edit or delete it here and the ledger follows.</div>
   </form>
 </section>
 

@@ -6,6 +6,7 @@ require_once __DIR__ . '/includes/simple_lib.php';
 require_once __DIR__ . '/includes/cod_sr_lib.php';
 require_once __DIR__ . '/includes/orders_lib.php';
 require_once __DIR__ . '/includes/cod_entry_lib.php';
+require_once __DIR__ . '/includes/order_dealer_lib.php';
 $user = require_admin();
 $pdo = db();
 
@@ -15,7 +16,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         if ($action === 'add') {
             add_remittance(
-                $pdo, $user, (int)($_POST['account_id'] ?? 0), num($_POST['amount'] ?? 0),
+                $pdo, $user, my_qr_id($pdo), num($_POST['amount'] ?? 0),
                 (string)($_POST['entry_date'] ?? ''), trim((string)($_POST['note'] ?? '')), []
             );
             flash('ok', 'COD received saved.');
@@ -41,9 +42,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 throw new RuntimeException('Choose a valid date.');
             }
             if (($_POST['kind'] ?? '') === 'lump') {
-                flash('ok', cod_lump_edit($pdo, $user, (int)($_POST['id'] ?? 0), $amt, $dt, (int)($_POST['account_id'] ?? 0), trim((string)($_POST['note'] ?? ''))));
+                flash('ok', cod_lump_edit($pdo, $user, (int)($_POST['id'] ?? 0), $amt, $dt, my_qr_id($pdo), trim((string)($_POST['note'] ?? ''))));
             } else {
-                flash('ok', cod_receipt_edit($pdo, $user, (int)($_POST['id'] ?? 0), $amt, $dt, (int)($_POST['account_id'] ?? 0)));
+                flash('ok', cod_receipt_edit($pdo, $user, (int)($_POST['id'] ?? 0), $amt, $dt, my_qr_id($pdo)));
             }
         }
     } catch (RuntimeException $ex) {
@@ -102,7 +103,6 @@ if ($srOk && $view !== 'received') {
 }
 $first = $pdo->query("SELECT MIN(d) FROM (SELECT MIN(received_date) AS d FROM cod_receipts UNION ALL SELECT MIN(entry_date) FROM account_ledger WHERE entry_type = 'cod') x")->fetchColumn() ?: $today;
 
-require_once __DIR__ . '/includes/order_dealer_lib.php';
 $codDefault = default_cod_account_id($pdo); // COD money normally comes into your own QR
 $accounts = $pdo->query('SELECT a.id, a.name, p.name AS owner FROM accounts a LEFT JOIN parties p ON p.id = a.party_id WHERE a.is_active = 1 ORDER BY (a.party_id IS NOT NULL), a.name')->fetchAll();
 // money entered here by hand (not tied to one order): the only entries that can be deleted from this page
@@ -247,7 +247,7 @@ require __DIR__ . '/includes/header.php';
         <form method="post" id="ed<?= e($en['kind']) ?><?= (int)$en['id'] ?>" style="display:none;gap:8px;align-items:flex-end;flex-wrap:wrap;margin-top:8px"><?= csrf_field() ?><input type="hidden" name="action" value="edit_entry"><input type="hidden" name="kind" value="<?= e($en['kind']) ?>"><input type="hidden" name="id" value="<?= (int)$en['id'] ?>"><input type="hidden" name="from" value="<?= e($from) ?>"><input type="hidden" name="to" value="<?= e($to) ?>">
           <div class="field" style="margin:0"><label>Amount (₹)</label><input name="amount" type="text" inputmode="decimal" value="<?= e(rtrim(rtrim(number_format((float)$en['amount'], 2, '.', ''), '0'), '.')) ?>" style="width:120px"></div>
           <div class="field" style="margin:0"><label>Date</label><input name="entry_date" type="date" value="<?= e($en['d']) ?>"></div>
-          <div class="field" style="margin:0"><label>Account</label><select name="account_id"><?php foreach ($accounts as $a): ?><option value="<?= (int)$a['id'] ?>"<?= (int)$a['id'] === (int)$en['account_id'] ? ' selected' : '' ?>><?= e($a['name']) ?></option><?php endforeach; ?></select></div>
+          <div class="field" style="margin:0"><label>Account</label><div class="mini" style="padding:12px 0;font-weight:700">My QR</div></div>
           <?php if ($en['kind'] === 'lump'): ?><div class="field" style="margin:0"><label>Note</label><input name="note" type="text" value="<?= e(cod_lump_note($en['note'])) ?>"></div><?php endif; ?>
           <button class="btn btn-accent btn-sm" type="submit">Save</button></form>
       </div>
@@ -266,10 +266,7 @@ require __DIR__ . '/includes/header.php';
     <?= csrf_field() ?><input type="hidden" name="action" value="add">
     <div class="field"><label for="entry_date">Date received</label><input id="entry_date" name="entry_date" type="date" value="<?= e($today) ?>" <?= $dateInput ?>></div>
     <div class="field"><label for="amount">Amount received (₹)</label><input id="amount" name="amount" type="text" inputmode="decimal" required></div>
-    <div class="field"><label for="account_id">Came into</label>
-      <select id="account_id" name="account_id">
-        <?php foreach ($accounts as $a): ?><option value="<?= (int)$a['id'] ?>"<?= (int)$a['id'] === $codDefault ? ' selected' : '' ?>><?= e($a['name']) ?><?= $a['owner'] ? ' (' . e($a['owner']) . ')' : '' ?></option><?php endforeach; ?>
-      </select></div>
+    <div class="field"><label>Came into</label><div class="mini" style="padding:12px 0;font-weight:700">My QR (all COD money comes into your own QR)</div></div>
     <div class="field"><label for="note">Note (optional)</label><input id="note" name="note" type="text" placeholder="Shiprocket remittance, UTR ..."></div>
     <button class="btn btn-accent btn-block" type="submit">Save COD received</button>
     <div class="hint">Use this for money that arrives in one lump, for example a courier remittance. Per-order COD entered on an order, or uploaded from Excel, is counted here too.</div>

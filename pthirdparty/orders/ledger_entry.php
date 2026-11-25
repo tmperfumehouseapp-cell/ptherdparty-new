@@ -5,6 +5,7 @@ require __DIR__ . '/includes/ops_lib.php';
 require_once __DIR__ . '/includes/proof_lib.php';
 require_once __DIR__ . '/includes/dealer_lib.php';
 require_once __DIR__ . '/includes/ledger_edit_lib.php';
+require_once __DIR__ . '/includes/order_dealer_lib.php';
 $user = require_admin();
 $pdo = db();
 
@@ -91,7 +92,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             throw new RuntimeException('Payment not found. It may already be deleted.');
         }
         if ($action === 'save') {
-            $acc = (int)($_POST['account_id'] ?? 0);
+            $acc = my_qr_id($pdo); // dealer payments always come out of your own QR
             $okAcc = $pdo->prepare('SELECT COUNT(*) FROM accounts WHERE id = ? AND (is_active = 1 OR id = ?)');
             $okAcc->execute([$acc, (int)$pp['account_id']]);
             $amt = round(num($_POST['amount'] ?? 0), 2);
@@ -176,8 +177,7 @@ require __DIR__ . '/includes/header.php';
           <option value="extra" <?= ($p['pay_kind'] ?? '') !== 'cod' ? 'selected' : '' ?>>Extra / old balance</option>
         </select></div>
       <?php endif; ?>
-      <div class="field"><label for="x_acc">Paid from account</label>
-        <select id="x_acc" name="account_id"><?php foreach ($accounts as $a): ?><option value="<?= (int)$a['id'] ?>" <?= (int)$a['id'] === (int)$p['account_id'] ? 'selected' : '' ?>><?= e($a['name']) ?></option><?php endforeach; ?></select></div>
+      <div class="field"><label>Paid from account</label><div class="mini" style="padding:12px 0;font-weight:700">My QR</div></div>
       <div class="field"><label for="x_amount">Amount (₹)</label><input id="x_amount" name="amount" type="text" inputmode="decimal" required value="<?= e(rtrim(rtrim(number_format((float)$p['amount'], 2, '.', ''), '0'), '.')) ?>"></div>
       <div class="field"><label for="x_method">How paid</label>
         <select id="x_method" name="pay_method"><option value="online" <?= $method !== 'cash' ? 'selected' : '' ?>>Online</option><option value="cash" <?= $method === 'cash' ? 'selected' : '' ?>>Cash</option></select></div>
