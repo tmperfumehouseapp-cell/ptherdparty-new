@@ -13,6 +13,7 @@ $nav = [
     ['key' => 'billing',    'label' => 'Billing',     'href' => 'billing.php',    'ready' => true,  'admin' => true],
     ['key' => 'refunds',    'label' => 'Refunds',     'href' => 'refunds.php',    'ready' => true,  'admin' => true],
     ['key' => 'cod_amount', 'label' => 'COD Amount',  'href' => 'cod_amount.php', 'ready' => true,  'admin' => true],
+    ['key' => 'boss_profit', 'label' => 'Boss profit', 'href' => 'boss_profit.php', 'ready' => true,  'admin' => true],
     ['key' => 'products',   'label' => 'Products',    'href' => 'products.php',   'ready' => true,  'admin' => true],
     ['key' => 'accounts',   'label' => 'Accounts',    'href' => 'accounts.php',   'ready' => true,  'admin' => true],
     ['key' => 'numbers',    'label' => 'Numbers',     'href' => 'numbers.php',    'ready' => true,  'admin' => true],
